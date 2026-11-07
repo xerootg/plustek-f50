@@ -47,6 +47,8 @@ from dng import write_dng  # noqa: E402
 
 MASTERS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "frames", "masters")
 SCALE10 = 64                  # 10-bit units x 64 in the 16-bit output
+SAFE10 = 750                  # bracket merge ignores a step where its stack mean exceeds this
+                              # (pixels saturate a little below code 1023, and not all alike)
 REV8 = np.array([int(f"{i:08b}"[::-1], 2) for i in range(256)], np.uint8)
 H, W = f50.WIN_HEIGHT, f50.WIN_WIDTH
 CTR = stack.CTR
@@ -102,6 +104,27 @@ def load_master10(d, kind, exposure, clkdiv, gain):
     return None, None, None
 
 
+def nearest_dark10(d, exposure, clkdiv, gain):
+    """Dark master for this setting, else the one with the nearest exposure at the same clock
+    and gain. Measured: the 10-bit darks at AEC 6, 600 and 1800 differ by < 0.3 LSB10 (dark
+    current is negligible at these exposures), so the nearest one is a sound substitute."""
+    m, info, name = load_master10(d, "dark", exposure, clkdiv, gain)
+    if m is not None or not os.path.isdir(d):
+        return m, info, name, None
+    best = None
+    for fn in os.listdir(d):
+        if fn.startswith("dark") and fn.endswith(f"_c{clkdiv}_g{gain}.json"):
+            e = int(fn.split("_e")[1].split("_")[0])
+            ten = fn.startswith("dark10")
+            key = (not ten, abs(e - exposure))
+            if best is None or key < best[0]:
+                best = (key, e)
+    if best is None:
+        return None, None, None, None
+    m, info, name = load_master10(d, "dark", best[1], clkdiv, gain)
+    return m, info, name, f"no dark master at AEC {exposure}; used {name} (nearest exposure)"
+
+
 def noise10(info):
     k = 1.0 if info.get("units", "").startswith("10") else 4.0
     return {c: v["frame_std"] * k for c, v in info["noise_final"].items()}
@@ -140,10 +163,12 @@ def capture_stack(s, args, exposure, clkdiv, gain, dark=False):
     try:
         if args.tenbit:
             st = stack.stack10(s, args.frames)
-            clip = st.clip | (st.max >= 1020)
-            return st.mean(), clip, st
+            m = st.mean()
+            clip = st.clip | (st.max >= 1020) | (m > SAFE10)
+            return m, clip, st
         st = stack.stack8(s, args.frames)
-        return st.mean() * 4 + 1.5, st.max == 255, st
+        m = st.mean() * 4 + 1.5
+        return m, (st.max == 255) | (m > SAFE10), st
     finally:
         if dark:
             s.lamp(True)
@@ -220,7 +245,9 @@ def main():
             if low and not args.tenbit:
                 rec["dither_warning"] = f"temporal noise < 0.5 LSB in {low}: the 8-bit mean is quantised"
         if args.calib:
-            dark, dinfo, dname = load_master10(args.calib, "dark", *st_)
+            dark, dinfo, dname, dnote = nearest_dark10(args.calib, *st_)
+            if dnote:
+                rec["dark_note"] = dnote
             if dark is None:
                 raise SystemExit(f"no dark master for {st_}; build it with tools/f50master.py dark --tenbit "
                                  f"--exposure {st_[0]} --clkdiv {st_[1]} --gain {st_[2]}")
@@ -231,7 +258,7 @@ def main():
             # (taken from the dark master, same setting) plus the dark master's residual noise
             rec["dark_master"] = dname
             rec["floor_10bit"] = {k: round(float(dn[k] * np.sqrt(1.0 / st.n + 1.0 / dinfo["frames_used"])), 4) for k in dn}
-            rec["clip_10bit"] = round(1023 - float(np.median(dark)), 1)
+            rec["clip_10bit"] = round((SAFE10 if args.bracket else 1023) - float(np.median(dark)), 1)
             rec["signal_noise_1frame_10bit"] = {k: round(v, 3) for k, v in sn.items()}
         else:
             lin = m10
