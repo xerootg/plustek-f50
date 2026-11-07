@@ -43,7 +43,7 @@ OP_FLAG3 = 0x17        # reply[4] = flag bit3, then clears it
 OP_VAR_6C = 0x19       # same get/set shape as 0x0A
 OP_I2C_READ = 0x13     # generic I2C read: block[4..5]=count, [6]=device address, data from reply[8]
 OP_I2C_WRITE = 0x14    # generic I2C write; NOT USED HERE, could hit the EEPROM
-OP_EEPROM_READ = 0x15  # 32-byte page read, 16-bit page address
+OP_EEPROM_READ = 0x15  # 32-byte page read: [4]=addr low, [5]=addr high, [6]=I2C addr (0x51); data at reply[8..39]; status is 0x1234 even on NAK
 OP_EEPROM_WRITE = 0x16 # 32-byte page write. NEVER SEND: it overwrites the boot firmware.
 FORBIDDEN = {OP_I2C_WRITE, OP_EEPROM_WRITE}
 

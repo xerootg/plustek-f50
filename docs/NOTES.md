@@ -344,3 +344,11 @@ Film is in the holder now: a colour negative strip (street scenes). Film detecti
   read/64, error -110`). **A physical USB replug is needed.** Sweep resumes with
   `--skip 306 --exposure 1800` (append to the same log), but 0x3e and 0x3f should be
   skipped (add them to `NEVER`) on resume.
+
+### Boot EEPROM dump (2026-11-07, read-only, opcode 0x15)
+
+8 KB EEPROM at I2C 0x51 (block [4] = address low byte, [5] = high byte, [6] = 0x51; data at
+reply[8..39]; the firmware returns 0x1234 even when the I2C read NAKs, so read each page twice
+with different filler). Its first 7955 bytes are **byte-identical to `FWofWin.bin`** (sha256
+4364a49a...), the remaining 237 bytes are 0xFF. Dump and details in the private RE folder
+(`plustek-f50-re/firmware/eeprom_dump.{bin,txt}`), not in this repo.
