@@ -42,7 +42,20 @@ Written 2026-11-06 after the first reverse-engineering session. Read
 | 5. Output format | Done: 16-bit PGM and DNG with frame averaging (`tools/f50raw.py`, `tools/dng.py`) |
 | 6. Validation | Partly: dark frame, flat frame, noise vs averaging done; real negative and slide still to do (holder was empty) |
 
-Phase 2 (2026-11-07): step 7 sweep in progress, 306 of ~1680 bits, no hit; halted at 0x3e (scanner hung, needs a replug). Steps 8/9 code written (`--tenbit`, `--bracket`), waiting on the swap register / the device.
+Phase 2/3 status (2026-11-07, end of session):
+
+| Step | State |
+|---|---|
+| 7. Bus-swap register | Done: 0x54 bit 2 (bit-reversed low byte); full 1674-bit sweep, no plain shift |
+| 8. 10-bit from pairs | Done: `--tenbit`; one coarse block then fine frames unwrapped against the stack; no comb |
+| 9. Bracketing | Done on the bare backlight (`--bracket`); film dynamic range waits for film |
+| 10. Backlight | Done: three white LEDs at different heights, not RGB; nothing to gain |
+| 11. Film validation | Waiting: film was removed for the masters; run when it is back |
+| 12. Deep stacks | Done: streaming, rejection, noise vs N; 200 frames in ~2 min |
+| 13. Masters | Done: 200-frame darks (AEC 6/600/1800 at 0x41, 1800 at 0x43) and flats, 8- and 10-bit |
+| 14. No spatial filtering | Done (none in the pipeline) |
+| 15. One command | Done: `f50raw.py OUT --tenbit --frames 200 --calib`; 121 s end to end |
+
 
 Earlier next step: load film and run step 6; confirm B/R with a slide; see "Open questions" in NOTES.md.
 

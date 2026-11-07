@@ -436,3 +436,107 @@ diffuser, not R, G and B.** Per-colour exposures are therefore not possible; ste
 here. The sum of the three single-channel frames is 2 % below the all-on frame (pixelwise
 -1.9 +- 1.3 LSB8), i.e. they add linearly (the small deficit is LED warm-up/drive). Use
 all three on (sub 4) as before.
+
+## 2026-11-07: step 9, exposure bracketing
+
+`f50raw.py --bracket "AEC[:CLKDIV[:GAIN]],..."`: each step is a stack (8- or 10-bit),
+dark-subtracted with the dark master for its setting, the exposure ratio between steps is
+measured from the data (median ratio over pixels unclipped in both), and the merge weights
+each step by its exposure, with weight 0 where the step clipped or its stack mean exceeds
+the linear ceiling `SAFE10 = 750` LSB10. The flat is divided after the merge. Output: 16-bit
+linear DNG, black 0, 65535 = the shortest step's ceiling.
+
+Bare backlight, `--tenbit --frames 32 --calib --bracket 6,200,600` (`frames/p9_bare_brk_s750.*`, 80 s):
+- measured ratios 1.497 (200/6) and 1.675..1.684 (600/200); the line-offset model
+  (AEC + 388)/(AEC' + 388) predicts 1.492 and 1.680. The +388-line offset is confirmed.
+- AEC 600 clipped 80 % of samples (B and G); the merge filled them from the shorter steps.
+- linearity ceiling: with the cut at 960 or 850 the merged flat showed 1-2 % steps in the
+  green where the long step's samples sat between ~750 and ~1015 (pixels saturate below
+  code 1023 and unevenly). With 750 every channel is uniform to 0.2 % (32-px block CV
+  0.07-0.18 %, extremes +-0.35 %). So the sensor is linear to ~0.2 % up to ~750 LSB10
+  (~73 % of full scale); above that it is not characterised.
+- dynamic range (engineering: ceiling over the stack's dark noise floor): 12.5 stops at 32
+  frames per step with a 2.5x exposure span. The span is the lever: the shortest exposure
+  is ~394 lines (AEC 6 + the 388-line VSYNC offset), the longest is a frame at CLKRC 0x41;
+  CLKRC 0x43 doubles the line time, so `6,1800,1800:3` spans ~11x (3.5 stops). Film DR
+  (densest vs clearest area of a real negative) still to be measured: film was out.
+
+Dark current is negligible: the 200-frame 10-bit darks at AEC 6, 600 and 1800 (CLKRC 0x41)
+and 1800 (0x43) agree within 0.4 LSB10 (B 29.3, G 43.5, R 29.0). If no dark master exists
+for a step, `--calib` uses the nearest exposure at the same clock and gain and says so in
+the JSON.
+
+## 2026-11-07: Phase 3, deep stacking and calibration (steps 12-15)
+
+- **Streaming stack** (`tools/stack.py`): float64 sum and sum of squares, per-pixel max;
+  memory ~100 MB whatever N. Rejection: short reads; frames whose residual against the
+  running mean (4x-subsampled grid, CFA phase kept) exceeds max(3x median, median + 4);
+  frames whose centre mean is off the running median by more than max(6 robust sigma,
+  0.5 LSB). In every capture today (about 3,000 frames) nothing was rejected; the rules are
+  there for transfer faults and backlight flicker.
+- **Noise versus N** is in every JSON (stack standard error per channel at N = 2, 4, ...
+  128). Bare backlight, Gb, 10-bit: 3.0 / 2.6 / 1.98 / 1.44 / 1.03 / 0.73 / 0.52 at N = 2..128
+  and 0.41 at 200: 1/sqrt(N) all the way (5.9 LSB10 per frame).
+- **Dither honesty.** 8-bit stacks dither only where temporal noise is >= ~0.5 LSB8. Lit
+  areas have 1.2-1.8 LSB8; the dark has 0.41 LSB8 (1.6 LSB10), so 8-bit stacks of dense film
+  and 8-bit dark masters are quantised. f50raw warns (`dither_warning`); use `--tenbit`.
+- **Masters** (`tools/f50master.py`, `frames/masters/`, 200 frames each, holder empty,
+  all three LEDs, gain 1x, nothing rejected):
+
+  | master | time | centre B / G / R | per-frame noise |
+  |---|---|---|---|
+  | flat_e6_c1 (8-bit) | 95 s | 137.8 / 115.5 / 76.8 LSB8 | 1.25-1.83 LSB8 |
+  | flat10_e6_c1 | 118 s | 557.0 / 467.0 / 311.0 LSB10 | 4.9-7.2 LSB10 |
+  | dark_e{6,600,1800}_c1 (8-bit) | 94 s each | 7.0 / 10.5 / 6.9 LSB8 | 0.5 (quantised) |
+  | dark_e1800_c3 (8-bit) | 188 s | 6.9 / 10.5 / 6.9 | 0.5 (quantised) |
+  | dark10_e{6,600,1800}_c1 | 118-131 s each | 29.3 / 43.5 / 29.1 LSB10 | 1.57-1.70 LSB10 |
+  | dark10_e1800_c3 | 189 s | 29.3 / 43.4 / 28.9 | 1.60-1.73 |
+
+  Capture time per 200 frames: 94 s (8-bit, CLKRC 0x41), 118 s (10-bit, the unwrap adds
+  0.12 s/frame of CPU), 188 s at CLKRC 0x43. The flats will be redone with 200 frames
+  whenever the holder is empty again; these ARE 200-frame flats (shot while the film was
+  out today), so the 16-frame flats in `frames/` are superseded.
+- **Calibration**: `lin = stack - dark_master`; flat divisor = `(flat - its dark)` normalised
+  to 1.0 per CFA channel at the centre (removes vignetting and PRNU, keeps channel scale);
+  AsShotNeutral from the flat's channel ratios (camera R:G:B = 0.534 : 0.803 : 1.0). No
+  spatial filtering anywhere; demosaic is left to the raw converter.
+- **One command** (step 15): `sudo python3 -I tools/f50raw.py OUT --tenbit --frames 200
+  --exposure AEC --calib [--bracket ...]` captures, stacks, calibrates, writes the 16-bit
+  linear DNG (Orientation 2, BGGR, black 0) and prints noise, dynamic range and time.
+  Bare backlight run `frames/p3_bare_t10_x200.*`: **121 s end to end for 200 frames**
+  (target < 5 min), 0 rejected; calibrated flat uniform to 0.14 % per pixel (= sqrt(2) x
+  the 0.41 LSB10 stack error of image and flat: no fixed pattern left); noise floor 0.16
+  LSB10, single-exposure dynamic range 12.6 stops (1023 - black over the floor; 12.1 stops
+  if the ceiling is taken as the 750 linear limit). exiftool shows Orientation "Mirror
+  horizontal", CFA BGGR, WhiteLevel 62784; LibRaw (`dcraw_emu`) decodes it.
+  A 200-frame stack of the loaded negative takes the same time (the frame rate does not
+  depend on exposure at CLKRC 0x41), ~2 min; not run because the film was out.
+
+## Final report, 2026-11-07 (Phase 2 and Phase 3)
+
+**Works** (all verified on the device, bare backlight unless stated):
+1. Bus swap: OV5620 0x54 bit 2 (bit-reversed low byte). Full sweep of 1674 bits logged.
+2. True 10-bit frames from coarse/fine pairing, at one frame per frame in stacks; no comb.
+3. Streaming deep stacks with rejection and noise-versus-N; 200 frames in ~2 min.
+4. 200-frame dark (4 settings, 8- and 10-bit) and flat masters; calibrated DNG output.
+5. Exposure bracketing with measured ratios, clipped-sample weights, linear ceiling 750.
+6. Backlight: three white LEDs at different heights (not RGB).
+7. Colour order BGGR confirmed on a colour negative; image mirrored left-right (DNG tag).
+8. Boot EEPROM = FWofWin.bin exactly (read-only dump, private folder).
+
+**Commands**: see README "Usage". Best outputs so far: `frames/p3_bare_t10_x200.dng`
+(200-frame calibrated 10-bit), `frames/p9_bare_brk_s750.dng` (bracket), masters in
+`frames/masters/`, film previews `frames/preview_negstrip{,2}.png`.
+
+**Still open**:
+- Step 11 and the film measurements (10-bit and bracketed scans of the negative, density
+  range in stops, 200-frame timing on film) wait until the owner loads film again. The
+  plan for that run: `--tenbit --frames 200 --exposure 1800 --calib`, then
+  `--bracket 6,1800,1800:3 --frames 64`, and report the densest/clearest area ratio.
+- Sensor linearity above ~750 LSB10 is not characterised (only avoided).
+- Throughput: ~14 MB/s at CLKRC 0x41 with bytes dropped at 0x40; an FX2 slave FIFO can do
+  well over 30 MB/s, so the limit (packet/FIFO config, read sizes, PCLK) deserves a look
+  with the FX2 TRM (`plustek-f50-re/packages/fx2/fx2_trm.txt`).
+- Registers 0x3e/0x3f are never written (0x3e = 0x17 hung the controller until a replug).
+  0x71 bit 3 recomputes the black-level registers (now pinned by raw_setup).
+- Firmware mode variable 0x0b (opcode 0x19) and faster retry (ADDVS = 0) still untested.
