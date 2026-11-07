@@ -41,7 +41,9 @@ Written 2026-11-06 after the first reverse-engineering session. Read
 | 5. Output format | Done: 16-bit PGM and DNG with frame averaging (`tools/f50raw.py`, `tools/dng.py`) |
 | 6. Validation | Partly: dark frame, flat frame, noise vs averaging done; real negative and slide still to do (holder was empty) |
 
-Next: load film and run step 6; confirm B/R with a slide; see "Open questions" in NOTES.md.
+Phase 2 (2026-11-07): step 7 sweep in progress, 306 of ~1680 bits, no hit; halted at 0x3e (scanner hung, needs a replug). Steps 8/9 code written (`--tenbit`, `--bracket`), waiting on the swap register / the device.
+
+Earlier next step: load film and run step 6; confirm B/R with a slide; see "Open questions" in NOTES.md.
 
 ## Steps
 

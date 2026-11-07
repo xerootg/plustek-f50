@@ -303,3 +303,44 @@ COM7 full size, no mirror/flip, gain register 0 (1x), CLKRC 0x41.
    sub-commands 1..5 with per-bit setters at 0x1e9b/0x1ea9/0x1eb7). If they are R, G,
    B LEDs, per-channel exposures would give true RGB without the Bayer filter's
    crosstalk. Untested.
+
+## 2026-11-07: Phase 2, step 7 (bus-swap sweep), in progress
+
+Film is in the holder now: a colour negative strip (street scenes). Film detection: CV of
+16x16-binned green is ~0.06 on the bare backlight, 0.25 on this film.
+
+- **B/R confirmed.** The negative's transmission relative to the bare backlight at AEC 6 is
+  0.13 at CFA (0,0), 0.20 at the greens and 0.30 at (1,1): the orange mask passes red most
+  and blue least, so (1,1) is R and (0,0) is B. BGGR holds (open question 1 closed), and a
+  2x2-binned inversion renders natural colours.
+- **Orientation.** The sensor image is mirrored left-right (sign text reads backwards),
+  upright otherwise. `f50.ORIENTATION = 2`; `dng.write_dng(orientation=)` writes TIFF
+  Orientation 2. Previews for the owner: `frames/preview_negstrip.png` (first seating, frame
+  cut on the right) and `frames/preview_negstrip2.png` (re-seated on the notch; mirror-
+  corrected; ~36 px of film base on the left, the frame just fits, holder masks the top
+  ~20 and bottom ~175 rows).
+- **Sweep method** (`tools/f50sweep.py`, log `frames/sweep/sweep_e1800.jsonl`, summary
+  `tools/sweepsum.py`): raw mode, AEC 1800 on film (centre mean ~86, std ~23, no clipping),
+  XOR one bit, read back (bits that do not stick are logged read-only and skipped), grab
+  two frames, restore, score the second frame against a baseline mean b: circular match of
+  `bitrev8(f)>>2` and `f>>2` with `b mod 64` (2-bit swap / plain shift), and the same for a
+  1-bit shift (period 128). A hit scores > 0.8; an untouched frame scores ~0.
+- **Covered so far (306 bits, 49 registers): no hit.** Best score 0.356.
+  - Phase A, every reserved bit of the documented registers (0x00 b7, 0x03 b5:4, 0x04 b5:3,
+    0x09 b7:5,3, 0x0c b5:4, 0x0d b7:3,0, 0x0e, 0x0f b7:2,0, 0x11 b7, 0x12 b2:0, 0x13 b6:3,
+    0x14 b4:3,0, 0x15 b7:6,2, 0x48 b7:2, 0x5f b7:6,3, 0x63 b7, 0x80 b7:5,3:2, 0x81 b7:4,
+    0x83 b7:2, 0x84, 0x85, 0x89 b7:6,4:0, 0x8b b7:6,4:0): no swap, no shift. (COM3 0x0c is
+    where OV7670/OV9655/OV7725 keep their MSB/LSB swap; on the OV5620 its bits only change
+    timing/brightness.)
+  - Phase B, every bit of reserved registers 0x05-0x08, 0x1e-0x23, 0x27-0x29, 0x2c,
+    0x33-0x3d and 0x3e bits 7..4: no hit. 0x39-0x3d (and 0x3e's high bits) do not hold
+    written values.
+  - Effects seen, none of them a bit swap: 0x12 b0 stops the stream (capture fails;
+    restoring recovers); 0x81 b7 gives a binary 0/255 image; 0x80 b7 and 0x37 b1 scramble
+    values; 0x0d b6, 0x22 b3, 0x23 b4 change level/contrast; 0x1e b5 gives an all-zero frame.
+- **Sensor/firmware hung at 0x3e.** After writing 0x3e = 0x17 (bit 4 of a register that
+  reads back unchanged) the next mailbox read timed out; a USB port reset (`dev.reset()`)
+  did not help, and the GT-6816 no longer answers descriptor reads (`device descriptor
+  read/64, error -110`). **A physical USB replug is needed.** Sweep resumes with
+  `--skip 306 --exposure 1800` (append to the same log), but 0x3e and 0x3f should be
+  skipped (add them to `NEVER`) on resume.
