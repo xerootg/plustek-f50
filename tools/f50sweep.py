@@ -15,7 +15,8 @@ register, and scores the second frame against a baseline mean b (8-bit, = v10 / 
   dmean  mean(f) - mean(b) over the centre crop
 
 Phase A: reserved bits inside documented registers. Phase B: every bit of every reserved
-register. Read-only bits (write does not stick) are logged and skipped. Never touches
+register. Read-only bits (write does not stick) are logged and skipped. Never touches 0x3e/0x3f
+(writing 0x3e = 0x17 hung the scanner until a replug),
 0x12 bit 7 (soft reset), 0x09 bits 2 and 4 (PWDN pin function, sleep) or the ID registers.
 Sensor writes are volatile; a USB replug restores the boot state.
 """
@@ -44,7 +45,7 @@ RESERVED = (list(range(0x05, 0x09)) + list(range(0x1E, 0x24)) + list(range(0x27,
             + list(range(0x33, 0x45)) + list(range(0x4A, 0x5F)) + [0x62] + list(range(0x64, 0x80))
             + [0x82] + list(range(0x86, 0x89)) + [0x8A] + list(range(0x8C, 0xA8))
             + list(range(0xAA, 0xB8)) + list(range(0xBB, 0x100)))
-NEVER = {0x12: 0x80, 0x09: 0x14, 0x0A: 0xFF, 0x0B: 0xFF, 0x1C: 0xFF, 0x1D: 0xFF}
+NEVER = {0x12: 0x80, 0x09: 0x14, 0x3E: 0xFF, 0x3F: 0xFF, 0x0A: 0xFF, 0x0B: 0xFF, 0x1C: 0xFF, 0x1D: 0xFF}
 
 Y0, Y1, X0, X1 = 772, 1172, 996, 1596   # centre crop (even offsets keep the CFA phase)
 
