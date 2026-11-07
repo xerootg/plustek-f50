@@ -52,3 +52,36 @@
    (1800 dpi CIS, small scan area), build, test with the firmware already
    resident, then tune geometry, AFE gain/offset and exposure.
 3. Raw output = 16-bit mode, `--gamma-value 1.0`, calibration off.
+
+### USB protocol (from the firmware's EP0 handler, `FWofWin.bin` 0x0df0)
+
+The firmware's standard-request switch handles GET_STATUS, CLEAR/SET_FEATURE,
+GET_DESCRIPTOR, GET/SET_CONFIGURATION, GET/SET_INTERFACE. Its vendor handler
+accepts exactly one bRequest, 0x04, in two forms; anything else stalls:
+
+| Direction | bmRequestType | bRequest | wValue | wIndex | wLength | Meaning |
+|---|---|---|---|---|---|---|
+| OUT | 0x40 | 0x04 | 0x0011 | 0x0001 | 64 | command block, copied to XDATA 0x2800 |
+| IN | 0xC0 | 0x04 | 0x0010 | 0x0000 | 64 | runs the command interpreter, returns the 64-byte reply from XDATA 0x2800 |
+
+Image data arrives on bulk EP2 IN (512-byte packets). EP1 IN is a 1-byte
+interrupt endpoint (likely the scan button).
+
+The command interpreter (code 0x0166) switches on the first two bytes of the
+block as a 16-bit little-endian opcode. Opcodes 0x00 to 0x19 exist (0x18 is
+missing, 0x10 to 0x12 share one handler); handler addresses in the flat image:
+
+```
+00:0202 01:023e 02:026d 03:0272 04:0277 05:027c 06:02b3 07:02b8 08:0300 09:0305
+0a:06c1 0b:0474 0c:0505 0d:0288 0e:0413 0f:0429 10/11/12:07b7 13:059a 14:05fc
+15:065e 16:06f6 17:0758 19:0781 default:07b5
+```
+
+So this is Plustek's own mailbox protocol, not the gt68xx command set, even
+though the chip family is the same. SANE's gt68xx backend cannot be reused
+as is; its memory-write/boot requests would just stall. The device already
+runs this firmware from its own EEPROM, so no download step is needed.
+
+Host side: `Scandrv.dll` talks to the device through Microsoft's `usbscan.sys`
+(`CreateFileA` + `DeviceIoControl`, interface enumerated with SetupDi) and
+uses Jungo WinDriver only for streaming bulk reads (`WDU_StreamRead`).
