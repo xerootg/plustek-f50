@@ -416,3 +416,23 @@ Verification on the bare backlight (AEC 6, gain 1x, `frames/t10_e6_x8*`, `frames
   8-bit stack to dither, so 8-bit stacks of dark film areas and 8-bit dark masters are
   quantised (their per-pixel std reads exactly 0.5, the two-level artefact). 10-bit fixes
   the shadows: use `--tenbit` for film.
+
+## 2026-11-07: step 10, the three backlight channels
+
+`tools/f50leds.py` (holder empty, AEC 6, 4 frames each; results `frames/backlight_channels.txt`,
+previews `frames/backlight_ch{1,2,3}.png`). Opcode 9 sub-commands 1, 2, 3 (block[5] = 1/0)
+switch PD0, PD1, PD2 one at a time; every command returned 0x1234 and every channel lights.
+
+| channel | B | G | R | R/G | B/G | where (sensor frame, not mirror-corrected) |
+|---|---|---|---|---|---|---|
+| PD0 (sub 1) | 38.7 | 31.0 | 20.8 | 0.670 | 1.247 | top, strongest at the top-left |
+| PD1 (sub 2) | 41.6 | 32.7 | 21.8 | 0.666 | 1.271 | middle band |
+| PD2 (sub 3) | 39.9 | 32.7 | 22.0 | 0.674 | 1.222 | bottom, strongest at the bottom-left |
+| all (sub 4) | 122.6 | 98.3 | 65.8 | 0.669 | 1.246 | uniform within ~15 % |
+
+(8-bit, full-frame means minus the all-off frame.) **The three channels are three white
+LEDs (or strings) with the same spectrum, placed at different heights behind the
+diffuser, not R, G and B.** Per-colour exposures are therefore not possible; step 10 ends
+here. The sum of the three single-channel frames is 2 % below the all-on frame (pixelwise
+-1.9 +- 1.3 LSB8), i.e. they add linearly (the small deficit is LED warm-up/drive). Use
+all three on (sub 4) as before.
