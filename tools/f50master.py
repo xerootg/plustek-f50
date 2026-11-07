@@ -27,6 +27,7 @@ def main():
     ap.add_argument("--clkdiv", type=int, default=1)
     ap.add_argument("--gain", type=lambda x: int(x, 0), default=0)
     ap.add_argument("--frames", type=int, default=200)
+    ap.add_argument("--tenbit", action="store_true", help="true 10-bit stack (bus-swap fine frames)")
     ap.add_argument("--dir", default=os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "frames", "masters"))
     args = ap.parse_args()
 
@@ -42,13 +43,13 @@ def main():
         if (probe == 255).mean() > 1e-4:
             raise SystemExit("flat clips at this exposure; use a shorter one")
     try:
-        st = stack.stack8(s, args.frames)
+        st = stack.stack10(s, args.frames) if args.tenbit else stack.stack8(s, args.frames)
     finally:
         s.lamp(True)
-    name = stack.master_name(args.kind, args.exposure, args.clkdiv, args.gain)
+    name = stack.master_name(args.kind, args.exposure, args.clkdiv, args.gain, args.tenbit)
     info = stack.save_master(args.dir, name, st, {
         "kind": args.kind, "exposure_lines": args.exposure, "clkdiv": args.clkdiv, "gain_reg": args.gain,
-        "units": "8-bit (sensor bits 9..2)", "frames_requested": args.frames})
+        "units": "10-bit" if args.tenbit else "8-bit (sensor bits 9..2)", "frames_requested": args.frames})
     print(json.dumps({k: v for k, v in info.items() if k != "noise_vs_n"}, indent=1))
     print("noise vs N (G on B row):", {k: v["Gb"]["stack_se"] for k, v in info["noise_vs_n"].items()})
 

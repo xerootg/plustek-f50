@@ -144,6 +144,47 @@ def stack8(s, n, chunk=3, log=print, max_seen=None):
     return st
 
 
+def stack10(s, n, chunk=3, coarse_frames=3, log=print, max_seen=None):
+    """Capture until n true 10-bit frames are accepted. One block of coarse frames (bits
+    9..2) seeds a 10-bit reference; every later frame is a fine frame (bus swapped: bits
+    0..7, bit-reversed) unwrapped against the running mean of the stack, so a deep 10-bit
+    stack costs one frame per frame. Pixels at 255 in any coarse frame are clipped (1023)."""
+    import f50
+    rev8 = np.array([int(f"{i:08b}"[::-1], 2) for i in range(256)], np.uint8)
+    s.bus_swap(False)
+    coarse = s.frames(coarse_frames)
+    ref = coarse.astype(np.float64).mean(0) * 4 + 1.5
+    clip = (coarse == 255).any(0)
+    del coarse
+    st = Stack(log=log)
+    max_seen = max_seen or int(n * 1.5) + 6
+    t0 = time.time()
+    s.bus_swap(True)
+    try:
+        while st.n < n and st.seen < max_seen:
+            k = min(chunk, n - st.n)
+            data = s.capture(f50.FRAME_BYTES * k, log=lambda *_: None)
+            if len(data) != f50.FRAME_BYTES * k:
+                st.rejected.append((st.seen, f"short read {len(data)} of {f50.FRAME_BYTES * k}"))
+                st.seen += k
+                continue
+            for fr in np.frombuffer(data, np.uint8).reshape(k, H, W):
+                lo = rev8[fr].astype(np.float64)
+                v = np.clip(lo + 256 * np.rint((ref - lo) / 256.0), 0, 1023)
+                v[clip] = 1023
+                st.add(v.astype(np.uint16))
+            if st.n:
+                ref = st.mean()
+            if st.n and (st.n % 30 < k):
+                el = time.time() - t0
+                log(f"  {st.n}/{n} frames, {el:.0f} s, {el / st.n:.2f} s/frame, rejected {len(st.rejected)}")
+    finally:
+        s.bus_swap(False)
+    st.seconds = time.time() - t0
+    st.clip = clip
+    return st
+
+
 def master_name(kind, exposure, clkdiv, gain, tenbit=False):
     return f"{kind}{'10' if tenbit else ''}_e{exposure}_c{clkdiv}_g{gain}"
 

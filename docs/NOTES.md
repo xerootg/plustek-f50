@@ -370,3 +370,49 @@ choose 512-byte high-speed packets) and the device enumerates at USB 2.0 high sp
 Throughput: an FX2 slave FIFO normally sustains well over 30 MB/s, so the ~14 MB/s ceiling
 measured at CLKRC 0x41 (bytes dropped at 0x40) is worth a second look once the pipeline work
 is done: packet/buffer configuration, read sizes, or the sensor's PCLK.
+
+## 2026-11-07: step 7 result, the bus-swap register is 0x54 bit 2
+
+**Found.** Setting OV5620 register **0x54 bit 2** (undocumented; power-on value 0x00)
+reverses the sensor's 10 output lines (datasheet "MSB/LSB Swap", Figure 12). The F50 wires
+pins Y9..Y2 to its 8-bit FIFO, so with the bit set each byte is `bitrev8(v10 & 0xff)`: the
+eight low bits of the 10-bit sample, bit-reversed. Sweep score for the bit-reversed model
+0.985 (frame 0 and frame 1 alike: it takes effect on the next frame), plain shift -0.003,
+frame correlation with the normal image -0.015 (as expected for low bits). `f50.SWAP_REG =
+0x54`, `SWAP_MASK = 0x04`, `SWAP_REVERSED = True`; `F50.bus_swap(on)`.
+
+Full sweep, log `frames/sweep/sweep_e1800.jsonl` (`python3 -I tools/sweepsum.py` summarises):
+1674 bits in 220 registers. Every reserved bit of the documented registers and every bit of
+every reserved register 0x05..0xff except 0x3e/0x3f (never written again after 0x3e hung
+the chip). 1443 bits writable and captured, 229 read-only (0x39-0x3d and others), 2 broke
+the stream until restored (0x12 b0, 0x41 b4). **No plain 2-bit shift exists**; 0x54 b2 is
+the only register with a score above 0.5. Sweep exposure: AEC 1800 on film up to 0x3e, AEC 6
+on the bare backlight from 0x40 on (the film was removed in between).
+
+Side effect found on the way: toggling **0x71 bit 3** recomputes undocumented black-level
+offsets (0x64-0x67 7f->ff, 0x68-0x6b 00->7f, 0xd0 00->1f; every channel +24 LSB8) that stay
+after 0x71 is restored. `raw_setup()` now writes their power-on values (`f50.BLC_POWERON`).
+The calibration masters were all shot before that sweep pass or after the restore (checked:
+flat level G 116 before and after).
+
+## 2026-11-07: step 8, true 10-bit frames
+
+`tools/f50raw.py --tenbit`, `tools/stack.py stack10()`. One block of 3 normal ("coarse")
+frames gives a 10-bit reference `4*c + 1.5`; every other frame is read with the bus
+swapped and unwrapped: `v = f + 256*round((ref - f)/256)` with `f = bitrev8(byte)`, against
+the running mean of the stack. So a 10-bit stack costs one frame per frame (0.59 s/frame at
+CLKRC 0x41 including the unwrap, against 0.47 for 8-bit). Pixels at 255 in any coarse frame
+are marked clipped (1023).
+
+Verification on the bare backlight (AEC 6, gain 1x, `frames/t10_e6_x8*`, `frames/t10_dark_x8*`):
+- reconstruction: mean |fine - coarse| over the centre = 2.4 LSB10 (lit), 0.7 (dark),
+  i.e. noise only; no unwrap errors (the margin is 128 LSB10, noise is 6).
+- histogram: every code fills; `v mod 4` fractions 0.24..0.26 in all four channels, lit
+  and dark: no 4-value comb. (Empty codes appear only in the sparse tails.)
+- level: 10-bit flat master centre G 465.6 against 4 x 115.1 + 1.5 = 462 from the 8-bit
+  master (agreement within the 8-bit truncation offset).
+- noise: lit, 6.0 LSB10 per frame = 1.5 LSB8, the same as the 8-bit frames (shot noise
+  dominates). Dark: **1.64 LSB10 = 0.41 LSB8**. That is below the ~0.5 LSB8 needed for the
+  8-bit stack to dither, so 8-bit stacks of dark film areas and 8-bit dark masters are
+  quantised (their per-pixel std reads exactly 0.5, the two-level artefact). 10-bit fixes
+  the shadows: use `--tenbit` for film.

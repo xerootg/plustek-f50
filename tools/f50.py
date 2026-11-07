@@ -76,8 +76,8 @@ ORIENTATION = 2                        # TIFF Orientation: the sensor image is m
 
 # OV5620 output-bus MSB/LSB swap (undocumented, found by tools/f50sweep.py, docs/NOTES.md).
 # With it set, the 8 lines wired to the F50 carry data bits 0..7 instead of 9..2.
-SWAP_REG = None
-SWAP_MASK = 0
+SWAP_REG = 0x54                        # bit 2; found 2026-11-07 (sweep: rev2 score 0.985)
+SWAP_MASK = 0x04
 SWAP_REVERSED = True                   # bytes arrive bit-reversed (datasheet Figure 12)
 
 
@@ -115,6 +115,13 @@ def win_set_clkrc(r, bit6, div):
     if bit6:
         v |= 0x40
     r[0x11] = (v & ~0x3F) | (div & 0x3F)
+
+
+# Undocumented OV5620 registers that set the black level (power-on values). Found when the
+# register sweep toggled 0x71 bit 3: 0x64-0x67 went 7f->ff, 0x68-0x6b 00->7f, 0xd0 00->1f,
+# and every channel rose by ~24 (8-bit) until these were written back.
+BLC_POWERON = [(0x64, 0x7F), (0x65, 0x7F), (0x66, 0x7F), (0x67, 0x7F),
+               (0x68, 0x00), (0x69, 0x00), (0x6A, 0x00), (0x6B, 0x00), (0xD0, 0x00)]
 
 
 class F50:
@@ -318,7 +325,10 @@ class F50:
             (0x8b, r[0x8b] & ~0x20), (0xa8, 0x00), (0xa9, 0xFF), (0x63, 0x00),
             (0x04, r[0x04] & 0x3F), (0x32, r[0x32] & 0x3F),
             (0x2d, 0x80), (0x2e, 0x01),
-            (0x11, 0x40 | (clkdiv & 0x3F)), (0x00, gain_reg & 0x7F)])
+            (0x11, 0x40 | (clkdiv & 0x3F)), (0x00, gain_reg & 0x7F),
+            # undocumented per-channel black-level offsets, pinned to their power-on values:
+            # toggling 0x71 bit 3 recomputes them (+24 LSB on every channel) and they stay
+            *BLC_POWERON])
         self.set_exposure(exposure)
         time.sleep(settle)
 
