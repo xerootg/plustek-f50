@@ -36,20 +36,31 @@ backend claims the device.
 
 ## Usage
 
-Needs pyusb and numpy; run as root (or add a udev rule for `07b3:0b00`).
+Needs pyusb and numpy (Pillow for previews); run as root (or add a udev rule for `07b3:0b00`).
 
 ```
-sudo python3 -I tools/f50.py                  # firmware/protocol versions
-sudo python3 -I tools/f50raw.py frames/dark --frames 16 --dark
-sudo python3 -I tools/f50raw.py frames/flat --frames 16 --black-from frames/dark.pgm
-sudo python3 -I tools/f50raw.py frames/neg1 --frames 8 --exposure 300 \
-    --black-from frames/dark.pgm --neutral-from frames/flat.pgm
+sudo python3 -I tools/f50.py                       # firmware/protocol versions
+
+# calibration masters, once per exposure setting (holder EMPTY for the flat)
+sudo python3 -I tools/f50master.py flat --tenbit --frames 200
+sudo python3 -I tools/f50master.py dark --tenbit --exposure 1800 --frames 200
+
+# one calibrated scan: 200-frame true 10-bit stack, dark + flat corrected, 16-bit DNG
+sudo python3 -I tools/f50raw.py frames/neg1 --tenbit --frames 200 --exposure 1800 --calib
+
+# exposure bracket merged linearly (each step stacked)
+sudo python3 -I tools/f50raw.py frames/neg1_hdr --tenbit --frames 64 --calib --bracket 6,1800,1800:3
 ```
 
-Each run writes `NAME.pgm` (16-bit, mean of the frames x 256), `NAME.dng` (BGGR raw)
-and `NAME.json`. Frames are 2592 x 1944, 8 bits per sample; see `docs/NOTES.md`.
+Each run writes `NAME.dng` (16-bit linear BGGR CFA, Orientation tag set because the
+F50's image is mirrored), `NAME.pgm` (the same samples) and `NAME.json` (frames used and
+rejected, noise versus N, noise floor and dynamic range per channel, timing). Frames are
+2592 x 1944; see `docs/NOTES.md`.
 
 ## Status
 
-Raw 8-bit Bayer capture, exposure/gain/backlight control, frame averaging and DNG
-output work. See `docs/PLAN.md` for the step list and `docs/NOTES.md` for evidence.
+True 10-bit raw Bayer capture (sensor bus-swap register 0x54 bit 2 plus frame pairing),
+streaming deep stacks with frame rejection, dark/flat calibration masters, exposure
+bracketing with a linear merge, and DNG output work. The USB controller is an
+FX2-compatible microcontroller (exact part unknown). See `docs/PLAN.md` for the step list
+and `docs/NOTES.md` for evidence and measured numbers.

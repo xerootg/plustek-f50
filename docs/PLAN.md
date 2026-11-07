@@ -155,3 +155,32 @@ Earlier next step: load film and run step 6; confirm B/R with a slide; see "Open
     orientation tag set, and prints the measured noise, dynamic range and
     time taken. Target: a 200-frame stack of the loaded negative under five
     minutes.
+
+## Phase 4 (added 2026-11-07 evening): the best possible picture of one frame
+
+Owner's brief: self-directed until done, no compromises, hundreds of frames
+are fine. The deliverable is one finished picture of the loaded negative.
+
+16. **Exposure ladder.** At gain 1x find the longest exposure where the
+    clearest film area (shadows of the scene, the film base at the frame
+    edge) stays below about 90% of full scale; that is the base exposure.
+    Add brackets at about 4x and 16x for the dense areas (scene highlights).
+    Stack hundreds of frames per bracket with the Phase 3 code; dark master
+    per exposure (backlight off, same exposure); one dark-subtracted,
+    normalised flat for PRNU (multiplicative, so one flat serves all
+    exposures); defect map from the dark (hot) and flat (dead) masters, with
+    those few pixels replaced by their same-colour neighbours and nothing else
+    touched spatially.
+17. **Merge and convert.** Linear HDR merge of the brackets with clipped
+    samples weighted out; 16-bit linear BGGR DNG with correct black and white
+    levels and Orientation 2 as the archival master. Then the positive:
+    demosaic with LibRaw's best available algorithm (rawpy: AMaZE if built,
+    else DCB with enhancements), film-base colour measured from the clear
+    border inside the frame, per-channel density inversion (log domain, the
+    negadoctor model), black and white points from the image, output a
+    16-bit TIFF and an sRGB JPEG preview. If darktable-cli is installed,
+    also run its negadoctor on the DNG for comparison and keep whichever is
+    better.
+18. **Prove it.** Report measured noise before and after stacking, the
+    dynamic range captured, and a crop at 100% from the final picture, in
+    docs/NOTES.md, with exact commands to reproduce.
