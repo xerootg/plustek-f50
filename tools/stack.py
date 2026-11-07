@@ -43,6 +43,7 @@ class Stack:
     def __init__(self, log=print):
         self.sum = np.zeros((H, W), np.float64)
         self.sq = np.zeros((H, W), np.float64)
+        self.max = None                 # per-pixel maximum over accepted frames (clip mask)
         self.n = 0
         self.rejected = []          # (index, reason)
         self.seen = 0
@@ -82,6 +83,7 @@ class Stack:
         self.means.append(m)
         self.sum += f
         self.sq += f * f
+        self.max = frame.copy() if self.max is None else np.maximum(self.max, frame)
         self.n += 1
         # reference for the residual test: the running mean (first frame until N = 3)
         if self.n <= 3 or self.n % 8 == 0:

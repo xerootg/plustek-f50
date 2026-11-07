@@ -24,6 +24,9 @@
   no Bayer mosaic to undo: R, G and B are separate exposures of the same line.
 - The manual says the film holder is pushed through by hand and indexes per
   frame with notches, so the only motor inside moves the sensor across one frame.
+- *(Corrected 2026-11-07: the F50's USB controller is an FX2-compatible USB
+  microcontroller, exact part unknown, not a GT-6816; see "Correction: the USB
+  controller" below. The GT-6816 statements in this section are history.)*
 - The GT-6816 is Grandtech's 8051-based scanner controller. SANE's `gt68xx`
   backend drives it for many Mustek/Plustek/Genius flatbeds, with 8/12/16-bit
   linear output, software gamma that can be set to 1.0, and calibration that
@@ -36,7 +39,8 @@
   we see from `lsusb` (strings "Film Scanner").
 - `tools/fx2probe.py`: the device does NOT answer the FX2 ROM loader request
   0xA0 (every address returns the same junk), so this is not a stock Cypress
-  part; the GT-6816 has an FX2-compatible core with its own boot protocol.
+  part. (Later corrected: with firmware running and RENUM set, an FX2 passes 0xA0 to the
+  firmware, which stalls or returns junk, so this does not rule out an FX2.)
 - SANE's `gt6816_download_firmware` sends the file raw, 64 bytes at a time, to
   address 0 via vendor request 0x01 / wValue 0x200b, then "boot" (0x69 0x01).
   Whether it needs a flat image or accepts the C2 wrapper is still open; the
@@ -140,7 +144,7 @@ Everything fits: the manual's "Image Capture CMOS", the "5 MP" marketing,
 hand-indexed holder, and `Reg.ini`'s ExposureTime/Gain/RGBGamma, which are
 sensor exposure, sensor gain and per-channel white balance.
 
-So the F50 is a fixed camera with a backlight. The GT-6816 only pipes the
+So the F50 is a fixed camera with a backlight. The USB controller only pipes the
 sensor's parallel pixel bus into the USB FIFO (slave FIFO mode) and relays
 I2C. "Raw sensor data" therefore means: configure the OV5620 for its raw
 Bayer output, manual exposure, gain 1x, no AWB/gamma, grab full frames over
@@ -340,7 +344,7 @@ Film is in the holder now: a colour negative strip (street scenes). Film detecti
     values; 0x0d b6, 0x22 b3, 0x23 b4 change level/contrast; 0x1e b5 gives an all-zero frame.
 - **Sensor/firmware hung at 0x3e.** After writing 0x3e = 0x17 (bit 4 of a register that
   reads back unchanged) the next mailbox read timed out; a USB port reset (`dev.reset()`)
-  did not help, and the GT-6816 no longer answers descriptor reads (`device descriptor
+  did not help, and the USB controller no longer answers descriptor reads (`device descriptor
   read/64, error -110`). **A physical USB replug is needed.** Sweep resumes with
   `--skip 306 --exposure 1800` (append to the same log), but 0x3e and 0x3f should be
   skipped (add them to `NEVER`) on resume.
@@ -352,3 +356,17 @@ reply[8..39]; the firmware returns 0x1234 even when the I2C read NAKs, so read e
 with different filler). Its first 7955 bytes are **byte-identical to `FWofWin.bin`** (sha256
 4364a49a...), the remaining 237 bytes are 0xFF. Dump and details in the private RE folder
 (`plustek-f50-re/firmware/eeprom_dump.{bin,txt}`), not in this repo.
+
+### Correction: the USB controller (2026-11-07)
+
+The USB controller is an **FX2-compatible USB microcontroller, exact part unknown**, not a
+Grandtech GT-6816. The real GT-6816 is a USB 1.1 part with its registers at 0xFFxx (see
+https://github.com/ronenkr/ScannerPlustek, a public RE of a Plustek S400 on that chip). Our
+firmware uses the FX2 register map (0xE680 is USBCS; the code at 0x1a0a tests its bit 7 to
+choose 512-byte high-speed packets) and the device enumerates at USB 2.0 high speed.
+"DRV_U_GT6816" is only the name of Plustek's driver lineage. The FX2 ROM loader request
+0xA0 not answering is consistent with an FX2 whose firmware has taken over (RENUM).
+
+Throughput: an FX2 slave FIFO normally sustains well over 30 MB/s, so the ~14 MB/s ceiling
+measured at CLKRC 0x41 (bytes dropped at 0x40) is worth a second look once the pipeline work
+is done: packet/buffer configuration, read sizes, or the sensor's PCLK.

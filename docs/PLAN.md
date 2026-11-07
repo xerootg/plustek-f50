@@ -19,7 +19,8 @@ Written 2026-11-06 after the first reverse-engineering session. Read
 - USB `07b3:0b00`. One vendor request (0x04): OUT wValue 0x0011/wIndex 1 = 64-byte
   command, IN wValue 0x0010/wIndex 0 = 64-byte reply. Opcodes 0x00..0x19.
   Working from Linux via pyusb (`tools/f50.py`).
-- The USB chip is a Grandtech GT-6816 (8051, FX2-style register map, firmware
+- The USB chip is an FX2-compatible USB microcontroller, exact part unknown (8051,
+  FX2 register map, USB 2.0 high speed; not a GT-6816 despite the driver's name; firmware
   already in its EEPROM). It relays I2C and pipes the sensor's parallel pixel
   bus into bulk EP 0x82 through an 8-bit slave FIFO (EP2FIFOCFG=0x4C: AUTOIN,
   8-bit wide, zero-length-in).

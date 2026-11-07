@@ -5,8 +5,9 @@ reading CPUCS and code RAM works whether or not application firmware runs.
 
 Result on the SmartPhoto F50 (2026-11-06): every read returns the same junk
 bytes regardless of address, so the F50's controller is NOT a genuine FX2 even
-though its firmware uses the FX2 register map. The GT-6816 has its own loader
-(the one SANE's gt68xx backend speaks: vendor request 0x01, wValue 0x200b/0x200c).
+though its firmware uses the FX2 register map. (Corrected 2026-11-07: this is expected
+from an FX2 whose firmware has taken over request 0xA0 via RENUM; the controller is an
+FX2-compatible part, exact part unknown, not a GT-6816. See docs/NOTES.md.)
 
 Usage: fx2probe.py [vid:pid]   (default 07b3:0b00)
 Prints CPUCS (0xE600) and the first bytes of code RAM. Nothing is written.

@@ -35,7 +35,10 @@ import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import f50  # noqa: E402
+import stack  # noqa: E402
 from dng import write_dng  # noqa: E402
+
+MASTERS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "frames", "masters")
 
 SCALE = 256           # 8-bit samples stored as x256 in 16 bits
 WHITE = 255 * SCALE
@@ -129,25 +132,24 @@ def parse_bracket(spec, clkdiv, gain):
 
 
 def capture_mean10(s, args, exposure, clkdiv, gain, dark=False):
-    """Mean of args.frames frames at one setting, in 10-bit units; plus a clip mask and the
-    single-frame noise estimate."""
+    """Stack of args.frames frames at one setting, in 10-bit units; plus a clip mask (any
+    accepted frame clipped), the single-frame noise and a film score."""
     s.lamp(not dark)
     s.raw_setup(exposure=exposure, gain_reg=gain, clkdiv=clkdiv)
-    if args.tenbit:
-        fr, _ = grab10(s, args.frames)
-        a = fr.astype(np.float64)
-        clip = (fr >= 1020).any(0)
-    else:
-        fr = grab8(s, args.frames)
-        a = fr.astype(np.float64) * 4 + 1.5
-        clip = (fr == 255).any(0)
-    if dark:
-        s.lamp(True)
-    sig1 = None
-    if len(a) >= 2:
-        d = a[0] - a[1]
-        sig1 = float(d[CTR[0]:CTR[1], CTR[2]:CTR[3]].std() / np.sqrt(2))
-    return a.mean(0), clip, sig1, fr
+    try:
+        if args.tenbit:
+            fr, _ = grab10(s, args.frames)
+            a = fr.astype(np.float64)
+            clip = (fr >= 1020).any(0)
+            sig1 = float((a[0] - a[1])[CTR[0]:CTR[1], CTR[2]:CTR[3]].std() / np.sqrt(2)) if len(a) >= 2 else None
+            return a.mean(0), clip, sig1, film_score((fr[0] >> 2).astype(np.uint8))
+        st = stack.stack8(s, args.frames)
+    finally:
+        if dark:
+            s.lamp(True)
+    nz = st.noise() if st.n >= 2 else None
+    sig1 = 4 * float(np.median([v["frame_std"] for v in nz.values()])) if nz else None
+    return st.mean() * 4 + 1.5, st.max == 255, sig1, film_score(st.max)
 
 
 def merge_bracket(steps, means, darks, clips, log=print):
@@ -179,6 +181,49 @@ def merge_bracket(steps, means, darks, clips, log=print):
     return num / den, {steps[i]: rel[i] / top for i in rel}, clip_level, fallback
 
 
+def calibrate8(args, mean8, summ):
+    """Dark subtraction (master at the same setting) and flat division (best flat master),
+    in linear 8-bit units. Returns the 16-bit output (x256, black 0), white level and info."""
+    dname = stack.master_name("dark", args.exposure, args.clkdiv, args.gain)
+    dark, dinfo = stack.load_master(args.calib, dname)
+    if dark is None:
+        raise SystemExit(f"no dark master {dname} in {args.calib}; build it with tools/f50master.py dark "
+                         f"--exposure {args.exposure} --clkdiv {args.clkdiv} --gain {args.gain}")
+    lin = mean8 - dark
+    cal = {"calibration": {"dark": dname, "dark_frames": dinfo["frames_used"]}}
+    fname = stack.find_flat(args.calib)
+    if fname:
+        flat, finfo = stack.load_master(args.calib, fname)
+        fdname = stack.master_name("dark", finfo["exposure_lines"], finfo["clkdiv"], finfo["gain_reg"])
+        fdark, _ = stack.load_master(args.calib, fdname)
+        if fdark is None:
+            fdark = np.full_like(flat, 0.0)
+            cal["calibration"]["flat_dark_warning"] = f"no {fdname}; flat used without dark subtraction"
+        g = stack.flat_gain(flat, fdark)
+        lin = lin / g
+        fm = [float(c[c.shape[0] // 2 - 100:c.shape[0] // 2 + 100, c.shape[1] // 2 - 150:c.shape[1] // 2 + 150].mean())
+              for c in stack.cfa_split(flat - fdark)]
+        cal["as_shot_neutral_rgb"] = [round(v / max(fm[3], (fm[1] + fm[2]) / 2, fm[0]), 4)
+                                      for v in (fm[3], (fm[1] + fm[2]) / 2, fm[0])]
+        cal["calibration"].update({"flat": fname, "flat_frames": finfo["frames_used"],
+                                   "flat_note": finfo.get("note", "bare backlight, holder empty")})
+    else:
+        cal["calibration"]["flat_warning"] = "no flat master: vignetting and PRNU not corrected"
+    # noise floor and dynamic range per CFA channel (8-bit units)
+    dn = dinfo["noise_final"]
+    n, nd = max(summ["frames_used"] if "frames_used" in summ else 1, 1), max(dinfo["frames_used"], 1)
+    clip = 255.0 - float(np.median(dark))
+    dr = {}
+    for k, v in dn.items():
+        floor = v["frame_std"] * np.sqrt(1.0 / n + 1.0 / nd)
+        dr[k] = {"floor_8bit": round(float(floor), 5), "dr_stops": round(float(np.log2(clip / max(floor, 1e-6))), 2)}
+    cal["dynamic_range"] = dr
+    cal["dark_frame_std_8bit"] = {k: v["frame_std"] for k, v in dn.items()}
+    white = int(round(clip * SCALE))
+    out16 = np.clip(np.rint(lin * SCALE), 0, 65535).astype(">u2")
+    return out16, white, cal
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("out")
@@ -192,6 +237,8 @@ def main():
     ap.add_argument("--dark", action="store_true", help="backlight off (dark frame)")
     ap.add_argument("--black-from", help="dark reference (.json from this tool, or legacy 16-bit .pgm)")
     ap.add_argument("--neutral-from", help="bare-backlight reference (.json or legacy .pgm): AsShotNeutral")
+    ap.add_argument("--calib", nargs="?", const=MASTERS, help="apply dark and flat masters from this directory "
+                    f"(default {MASTERS}): dark subtraction and flat division, 16-bit linear output, black 0")
     ap.add_argument("--save-frames", action="store_true", help="also write the first raw frame (8-bit or 16-bit PGM)")
     args = ap.parse_args()
     if args.tenbit and f50.SWAP_REG is None:
@@ -208,13 +255,32 @@ def main():
         means, darks, clips, noise = [], [], [], {}
         dargs = argparse.Namespace(**{**vars(args), "frames": args.dark_frames})
         for st in steps:
-            m, c, sig, fr = capture_mean10(s, args, *st)
-            print(f"step {st}: centre CFA {[round(v, 1) for v in cfa_means(m, *CTR)]}, clipped {c.mean():.4f}, film {film_score(fr[0] if fr.dtype == np.uint8 else fr[0] >> 2):.3f}")
-            d, _, dsig, _ = capture_mean10(s, dargs, *st, dark=True)
+            m, c, sig, fsc = capture_mean10(s, args, *st)
+            print(f"step {st}: centre CFA {[round(v, 1) for v in cfa_means(m, *CTR)]}, clipped {c.mean():.4f}, film {fsc:.3f}")
+            dsig = None
+            if args.calib:
+                dname = stack.master_name("dark", *st)
+                d8, dinfo = stack.load_master(args.calib, dname)
+                if d8 is None:
+                    raise SystemExit(f"no dark master {dname}; build it with tools/f50master.py dark --exposure {st[0]} --clkdiv {st[1]} --gain {st[2]}")
+                d = d8 * 4 + 1.5
+                dsig = 4 * float(np.median([v["frame_std"] for v in dinfo["noise_final"].values()]))
+            else:
+                d, _, dsig, _ = capture_mean10(s, dargs, *st, dark=True)
             means.append(m), darks.append(d), clips.append(c)
             noise[str(st)] = {"signal_noise_1frame_10bit": sig, "dark_noise_1frame_10bit": dsig,
                               "dark_cfa_10bit": [round(v, 2) for v in cfa_means(d)]}
         rad, rel, clip_level, fallback = merge_bracket(steps, means, darks, clips)
+        if args.calib:
+            fname = stack.find_flat(args.calib)
+            if fname:
+                flat, finfo = stack.load_master(args.calib, fname)
+                fdark, _ = stack.load_master(args.calib, stack.master_name("dark", finfo["exposure_lines"], finfo["clkdiv"], finfo["gain_reg"]))
+                rad = rad / stack.flat_gain(flat, fdark if fdark is not None else 0 * flat)
+                fm = [float(c.mean()) for c in stack.cfa_split((flat - (fdark if fdark is not None else 0))[CTR[0]:CTR[1], CTR[2]:CTR[3]])]
+                nt = (fm[3], (fm[1] + fm[2]) / 2, fm[0])
+                info["as_shot_neutral_rgb"] = [round(v / max(nt), 4) for v in nt]
+                info["calibration"] = {"darks": "masters per step", "flat": fname, "flat_frames": finfo["frames_used"]}
         scale = 65535.0 / clip_level
         out16 = np.clip(np.rint(rad * scale), 0, 65535).astype(">u2")
         black, white = (0, 0, 0, 0), 65535
@@ -245,26 +311,38 @@ def main():
                 f50.save_pgm(args.out + "_coarse0.pgm", coarse[0].tobytes(), W, H)
             to_out = lambda v: v * args.frames
         else:
-            fr = grab8(s, args.frames)
-            acc = fr.astype(np.float64)
-            out16 = np.clip(np.rint(acc.mean(0) * SCALE), 0, 65535).astype(">u2")
+            st = stack.stack8(s, args.frames)
+            mean8 = st.mean()
+            fr = None
+            summ = st.summary()
+            info.update({"frames_used": st.n, "frames_seen": st.seen, "rejected": st.rejected,
+                         "noise_vs_n_8bit": summ["noise_vs_n"], "noise_8bit": summ["noise_final"],
+                         "capture_seconds": round(st.seconds, 1)})
+            out16 = np.clip(np.rint(mean8 * SCALE), 0, 65535).astype(">u2")
             white = WHITE
-            ten = acc.mean(0) * 4 + 1.5
-            info["clipped_fraction_frame0"] = float((fr[0] == 255).mean())
-            if args.save_frames:
-                f50.save_pgm(args.out + "_f0.pgm", fr[0].tobytes(), W, H)
+            ten = mean8 * 4 + 1.5
             to_out = lambda v: (v - 1.5) * SCALE / 4
+            if summ["noise_final"]:
+                low = [k for k, v in summ["noise_final"].items() if v["frame_std"] < 0.5]
+                if low:
+                    info["dither_warning"] = f"temporal noise < 0.5 LSB in {low}: the 8-bit mean is quantised"
+            if args.calib and not args.dark:
+                out16, white, cal = calibrate8(args, mean8, summ)
+                info.update(cal)
+                neutral_ref = None
+            info["film_score"] = round(film_score(np.clip(mean8, 0, 255).astype(np.uint8)), 3)
         if args.dark:
             s.lamp(True)
-        if args.frames >= 2:
+        if args.frames >= 2 and fr is not None:
             d = acc[0] - acc[1]
             sig1 = float(d[CTR[0]:CTR[1], CTR[2]:CTR[3]].std() / np.sqrt(2))
             unit = "10bit" if args.tenbit else "8bit"
             info[f"temporal_noise_1frame_{unit}"] = round(sig1, 4)
             info[f"temporal_noise_mean_{unit}_expected"] = round(sig1 / np.sqrt(args.frames), 4)
-        info["film_score"] = round(film_score(fr[0] if fr.dtype == np.uint8 else fr[0] >> 2), 3)
+        if fr is not None:
+            info["film_score"] = round(film_score(fr[0] >> 2), 3)
         black = (0, 0, 0, 0)
-        if args.black_from:
+        if args.black_from and not info.get("calibration"):
             black = tuple(to_out(v) for v in ref_cfa_10bit(args.black_from))
         cfa_mean, ctr_mean = cfa_means(ten), cfa_means(ten, *CTR)
 
@@ -276,7 +354,7 @@ def main():
         info["black_level_dng"] = [round(b, 1) for b in black]
     f50.save_pgm(args.out + ".pgm", out16.tobytes(), W, H, 65535)
 
-    neutral = (1.0, 1.0, 1.0)
+    neutral = tuple(info.get("as_shot_neutral_rgb", (1.0, 1.0, 1.0)))
     if neutral_ref:
         m = ref_cfa_10bit(neutral_ref, CTR)
         blk = ref_cfa_10bit(args.black_from) if args.black_from else [0, 0, 0, 0]
