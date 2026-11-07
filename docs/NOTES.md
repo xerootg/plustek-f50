@@ -233,15 +233,73 @@ Opcode 9 sub-command 4 with argument 1 (sent by Scandrv at open) sets port D bit
 - Throughput with CLKRC = 0x43: 7.1..7.2 MB/s, about 0.7 s per frame; CLKRC = 0x47
   halves it (3.9 MB/s), so the rate is set by the sensor clock, not by USB.
 - Windows sequence replayed exactly (power-on registers restored first, then op 9(4,1),
-  op 2(1), FUN_00402930, op 7/5 + read): `captures/win_settings_frame0.pgm`, mean 254.6,
+  op 2(1), FUN_00402930, op 7/5 + read): `frames/win_settings_frame0.pgm`, mean 254.6,
   93 % of pixels at 255. With the bare backlight (no film) its auto-gain loop cannot
   reach YAVG 0x38..0x58 and ends at the minimum; the result is overexposed, as the
   Windows driver would be without film.
 - Raw-ish settings (COM8 manual, COM9 no frame drop, DSPEN 0x02 raw before CIP, DSP01
   0, DGCTRL 1x, DSP09 AWB gains off, DSP0B gamma off, BOTLMT/TOPLMT 0/255, COM34 0,
-  gain 0, exposure 6 lines, CLKRC 0x43): `captures/raw8_e6_clk3_frame0.pgm`. A flat
+  gain 0, exposure 6 lines, CLKRC 0x43): `frames/raw8_e6_clk3_frame0.pgm`. A flat
   backlight field with dust and fibres in focus, no seam. Channel means
   (0,0)=240.0 (0,1)=202.2 (1,0)=201.6 (1,1)=138.6: the matching diagonal is green, so
   the CFA is **BGGR** as the datasheet says (proven for the green diagonal; B vs R
   inferred from the datasheet and the LED's blue-heavy spectrum).
-- Captures live in `captures/` (gitignored).
+- Captures live in `frames/` (gitignored).
+
+### Raw mode (proven on the device, 2026-11-06)
+
+`F50.raw_setup()` / `tools/f50raw.py`: COM8 manual (no AEC/AGC/AWB), COM9 no frame
+drop, DSPEN 0x02 (raw before CIP, CIP off), DSP01 0 (no pixel cancelling), DGCTRL
+1x, DSP09 AWB gains off, DSP0B gamma off, BOTLMT/TOPLMT 0/255, COM34 no de-noise,
+COM7 full size, no mirror/flip, gain register 0 (1x), CLKRC 0x41.
+
+- **Bit depth.** The sensor is 10-bit but the F50's FIFO is 8 bits wide. Values rise
+  monotonically to a hard 255 with no wrap, so the 8 lines carry the MSBs (Y9..Y2).
+  No register gives the low bits on an 8-bit bus (the datasheet's MSB/LSB swap has no
+  documented register). **8-bit raw is the floor.** Depth comes from averaging:
+  temporal noise is 1.5 LSB per frame at the default flat exposure, enough to dither,
+  and an N-frame mean's noise measured 1.50 / 1.06 / 0.75 / 0.53 for N = 1/2/4/8
+  (1/sqrt(N)). A single frame uses every code in its range (no missing codes).
+- **Backlight.** Opcode 9 sub-command 4 argument 0/1 switches it (lamp off at AEC 32:
+  mean 8.55, the black level; on: 205). Black level per CFA position from 16 dark
+  frames: B 6.93, G 10.46, G 10.51, R 6.87 (8-bit units).
+- **Clock.** CLKRC 0x41 (PLL/4) streams about 14 MB/s with no drops over 9 frames in
+  3 reads; 0x40 (PLL/2) drops bytes (Bayer phase breaks); 0x43 (Windows) about 7 MB/s.
+- **Exposure response.** AEC 0x04[2:0]/0x10/0x45[5:0] in lines. The firmware boots
+  with ADDVS = 0x180 (VSYNC 388 lines). With it, AEC <= 5 gives a black frame and
+  AEC >= 6 gives an effective exposure of AEC + ~388 lines (G at CLKRC 0x41: AEC 6 ->
+  108.8, AEC 200 -> 157.2; slope 0.25..0.27 per line, linear). With ADDVS = 0 the
+  response is black + 0.27*AEC (AEC 100/200/400/600 -> G 36.9/64.0/118.9/172.3), but
+  then the blanking after VSYNC is a few lines, shorter than the ~20 ms a failed
+  large read takes to retry, and reads after the first start inside the frame
+  (frames 3..5 of 9 misaligned). raw_setup therefore keeps ADDVS = 0x180. The
+  shortest exposure (AEC 6) on the bare backlight at CLKRC 0x41 gives B 137, G 116,
+  R 77: no clipping, about one stop of headroom over clear film base. Longer
+  exposures (up to the frame length), analog gain and slower clocks cover dense film.
+- **CFA.** Green is the (0,1)/(1,0) diagonal (Gr/Gb ratio 0.99..1.01 across the
+  frame). B at (0,0) and R at (1,1) follow the datasheet; not yet confirmed with a
+  coloured target.
+- **Outputs.** `OUT.pgm` 16-bit (8-bit mean x 256, white 65280); `OUT.dng` (uncompressed
+  16-bit CFA, BGGR, per-CFA BlackLevel from a dark PGM, AsShotNeutral from a flat PGM,
+  placeholder ColorMatrix1 = XYZ->sRGB, not a calibration). exiftool reads the tags;
+  LibRaw (`dcraw_emu -T -w`) decodes it, and a flat captured with neutral from the
+  flat reference renders as (247.1, 247.0, 247.0).
+- Reference captures (gitignored): `frames/dark_x16.*` (lamp off, 16 frames),
+  `frames/flat_x16.*` (bare backlight, 16 frames), `frames/flat_wb_x4.*`.
+
+### Open questions
+
+1. B vs R at (0,0)/(1,1) needs a coloured target (a slide) to confirm.
+2. Why AEC <= 5 is black with ADDVS = 0x180, and why the offset exists at all, is
+   unexplained by the datasheet (the VSYNC lines seem to count as integration time).
+3. A faster retry (probe reads of 512 bytes instead of retrying the full-size read)
+   or async URBs (python-libusb1) would allow ADDVS = 0 and exposures shorter than
+   ~394 lines; not needed for film, which is darker than the bare backlight.
+4. Firmware mode variable 0x6c = 0x0b (opcode 0x19) changes the VSYNC ISR (FIFO reset
+   every VSYNC, EP2 stays valid across opcode 7). Unused by Windows; untested.
+5. Validation with real film (negative and slide) is still to do: the holder was
+   empty for every capture today.
+6. Port D bits 0..2 (opcode 9/4) may be three separate LED channels (opcode 9 has
+   sub-commands 1..5 with per-bit setters at 0x1e9b/0x1ea9/0x1eb7). If they are R, G,
+   B LEDs, per-channel exposures would give true RGB without the Bayer filter's
+   crosstalk. Untested.

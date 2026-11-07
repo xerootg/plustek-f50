@@ -30,6 +30,19 @@ Written 2026-11-06 after the first reverse-engineering session. Read
   generic I2C and EEPROM page reads. **0x14 and 0x16 can rewrite the boot
   EEPROM: never send them.**
 
+## Status (2026-11-06, end of second session)
+
+| Step | State |
+|---|---|
+| 1. OV5620 register map | Done: `docs/OV5620.md` (datasheet v1.3 in the private RE folder) |
+| 2. Windows sequences | Done: decoded from `WDUScan.exe` (sensor setup, capture) and the firmware's VSYNC ISR; see NOTES.md. Workbench run finished with matching results |
+| 3. Capture path | Done: `F50.capture()`, `frames()`, `win_setup()`; Windows sequence replayed, 2592x1944x8-bit frames, byte count explained |
+| 4. Raw mode | Done: `raw_setup()`; 8-bit raw is the floor (8-bit FIFO); manual exposure/gain, lamp on/off |
+| 5. Output format | Done: 16-bit PGM and DNG with frame averaging (`tools/f50raw.py`, `tools/dng.py`) |
+| 6. Validation | Partly: dark frame, flat frame, noise vs averaging done; real negative and slide still to do (holder was empty) |
+
+Next: load film and run step 6; confirm B/R with a slide; see "Open questions" in NOTES.md.
+
 ## Steps
 
 1. **OV5620 register map.** Get the OV5620 datasheet (version 1.3, 2007;

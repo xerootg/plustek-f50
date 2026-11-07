@@ -32,7 +32,24 @@ backend claims the device.
 - `docs/` notes, protocol findings
 - `captures/` USB captures (usbmon / pcapng) of the Windows driver talking to the scanner
 - `tools/` scripts to drive the scanner from Linux
+- `frames/` image output (gitignored)
+
+## Usage
+
+Needs pyusb and numpy; run as root (or add a udev rule for `07b3:0b00`).
+
+```
+sudo python3 -I tools/f50.py                  # firmware/protocol versions
+sudo python3 -I tools/f50raw.py frames/dark --frames 16 --dark
+sudo python3 -I tools/f50raw.py frames/flat --frames 16 --black-from frames/dark.pgm
+sudo python3 -I tools/f50raw.py frames/neg1 --frames 8 --exposure 300 \
+    --black-from frames/dark.pgm --neutral-from frames/flat.pgm
+```
+
+Each run writes `NAME.pgm` (16-bit, mean of the frames x 256), `NAME.dng` (BGGR raw)
+and `NAME.json`. Frames are 2592 x 1944, 8 bits per sample; see `docs/NOTES.md`.
 
 ## Status
 
-See `docs/NOTES.md`.
+Raw 8-bit Bayer capture, exposure/gain/backlight control, frame averaging and DNG
+output work. See `docs/PLAN.md` for the step list and `docs/NOTES.md` for evidence.

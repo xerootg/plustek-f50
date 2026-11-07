@@ -70,6 +70,8 @@ SENSOR_REGS = [
 # 8-bit Bayer samples, read into a 0x4ce300-byte buffer.
 WIN_WIDTH, WIN_HEIGHT = 2592, 1944
 WIN_READ_BYTES = 0x4CE300
+FRAME_BYTES = WIN_WIDTH * WIN_HEIGHT   # 5,038,848: one frame on EP 0x82, rows back to back
+CFA = "BGGR"                           # first line B G B G, second G R G R (datasheet)
 
 
 def win_gain_reg(g):
@@ -270,6 +272,61 @@ class F50:
         n = 0 if data is None else len(data)
         log(f"  read {n} bytes, {tries} retries before EP2 went valid, {dt:.2f} s; op7 overflow flag={r[4]}")
         return bytes(data) if data is not None else b""
+
+    # ---- raw mode (OV5620 datasheet v1.3, docs/OV5620.md) ----
+
+    def lamp(self, on=True):
+        """Opcode 9 sub-command 4: firmware drives port D bits 0..2 (backlight LEDs).
+
+        Scandrv.dll sends 9/(4,1) at open and before scans (with WarmUpPeriod in [6..7])."""
+        return self.cmd(OP_START_STREAM, bytes([0, 0, 4, 1 if on else 0]))
+
+    def set_exposure(self, lines):
+        """AEC[16:0] in lines: 0x04[2:0] = [2:0], 0x10 = [10:3], 0x45[5:0] = [16:11]."""
+        lines = max(1, min(int(lines), 0x1FFFF))
+        r = self.read_regs([0x04, 0x45])
+        self.write_regs([(0x04, (r[0x04] & ~0x07) | (lines & 0x07)), (0x10, (lines >> 3) & 0xFF),
+                         (0x45, (r[0x45] & ~0x3F) | ((lines >> 11) & 0x3F))])
+
+    def set_gain(self, reg):
+        """Analog gain register 0x00: (b6+1)(b5+1)(b4+1)(1+b[3:0]/16); 0 = 1x."""
+        self.write_regs([(0x00, reg & 0x7F)])
+
+    def raw_setup(self, exposure=6, gain_reg=0, clkdiv=1, settle=1.5):
+        """Sensor straight out: manual AEC/AGC/AWB, no frame drop, raw before CIP, no
+        pixel cancelling, digital gain 1x, no AWB gains, no gamma, no clipping limits,
+        no de-noise, full-size mode, no mirror/flip.
+
+        The firmware boots with ADDVS (0x2d/0x2e) = 0x180: VSYNC is 388 lines wide. Keep it.
+        It is the blanking time between the VSYNC that validates EP2 and the first pixel,
+        which capture()'s retry loop (about 20 ms per failed read) needs; with ADDVS = 0
+        later reads start inside the frame and are misaligned. Side effect, measured: for
+        AEC >= 6 the effective exposure is AEC + ~388 lines (linear, constant offset); for
+        AEC <= 5 the image is black. clkdiv sets CLKRC (PLL/((n+1)*2)): 1 streams ~14 MB/s
+        cleanly; 0 overflows the FIFO (bytes dropped); 3 is what Windows uses."""
+        r = self.read_regs([0x04, 0x12, 0x13, 0x14, 0x83, 0x89, 0x8b, 0x32])
+        self.write_regs([
+            (0x13, r[0x13] & ~0x87), (0x14, r[0x14] & ~0x06), (0x12, r[0x12] & 0x07),
+            (0x80, 0x02), (0x81, 0x00), (0x83, r[0x83] & ~0x03), (0x89, r[0x89] & ~0x20),
+            (0x8b, r[0x8b] & ~0x20), (0xa8, 0x00), (0xa9, 0xFF), (0x63, 0x00),
+            (0x04, r[0x04] & 0x3F), (0x32, r[0x32] & 0x3F),
+            (0x2d, 0x80), (0x2e, 0x01),
+            (0x11, 0x40 | (clkdiv & 0x3F)), (0x00, gain_reg & 0x7F)])
+        self.set_exposure(exposure)
+        time.sleep(settle)
+
+    def frames(self, n=1, log=print):
+        """n consecutive frames as a (n, 1944, 2592) uint8 array, in reads of up to 3
+        frames (usbfs limit). Each read starts at a frame top."""
+        import numpy as np
+        out = []
+        while len(out) < n:
+            k = min(3, n - len(out))
+            data = self.capture(FRAME_BYTES * k, log=log)
+            if len(data) != FRAME_BYTES * k:
+                raise IOError(f"short capture: {len(data)} of {FRAME_BYTES * k}")
+            out.extend(np.frombuffer(data, np.uint8).reshape(k, WIN_HEIGHT, WIN_WIDTH))
+        return np.stack(out[:n])
 
     def dump_regs(self):
         regs = self.read_regs(list(range(256)))
