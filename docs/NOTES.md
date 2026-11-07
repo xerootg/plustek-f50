@@ -85,3 +85,21 @@ runs this firmware from its own EEPROM, so no download step is needed.
 Host side: `Scandrv.dll` talks to the device through Microsoft's `usbscan.sys`
 (`CreateFileA` + `DeviceIoControl`, interface enumerated with SetupDi) and
 uses Jungo WinDriver only for streaming bulk reads (`WDU_StreamRead`).
+
+### Host software architecture (Windows)
+
+- `WDUScan.exe` is an out-of-process COM server ("WDUFilmScanner Class",
+  CLSID `{81C5FF24-3C8B-494D-A29C-181923112BCB}`, events
+  `_IWDUFilmScannerEvents`) built on Jungo WinDriver (licence string
+  `WD_Ver1010_Plustek`). It exposes `DoUsbControlIn`, `DoUsbControlOut`,
+  `GetEventValue` and raises the interrupt-endpoint event.
+- `Scandrv.dll` (export `ScannerCommander`) is the engine: it builds the
+  64-byte command blocks, sends them through the COM server, and pulls image
+  data itself with `WDU_StreamRead` on pipe 0x82. Its `\\.\HCD%d` and
+  SetupDi code is only the "is this a USB 2.0 port" check.
+- `TWAIN_32.ds` and the WIA microdriver (`MidrvA41.dll`, `WIAA4103.dll`) sit
+  on top of `ScannerCommander`.
+
+So every register write the scanner ever sees originates in `Scandrv.dll`.
+Recovering the init, lamp, calibration and scan-setup sequences from it is
+the remaining reverse-engineering job (delegated to the RE workbench).
