@@ -22,9 +22,10 @@ def _rat(x, signed=False, den=10000):
 
 def write_dng(path, cfa16, pattern="BGGR", black=(0, 0, 0, 0), white=65535,
               neutral=(1.0, 1.0, 1.0), make="Plustek", model="SmartPhoto F50",
-              software="plustek-f50 tools/dng.py", description=""):
+              software="plustek-f50 tools/dng.py", description="", orientation=1):
     """cfa16: (H, W) uint16 Bayer plane. black: one value per 2x2 CFA position in
-    row-major order. neutral: camera RGB of a neutral (AsShotNeutral)."""
+    row-major order. neutral: camera RGB of a neutral (AsShotNeutral). orientation: TIFF
+    Orientation (1 = as stored, 2 = mirrored left-right; the F50 needs 2)."""
     a = np.ascontiguousarray(cfa16, dtype="<u2")
     h, w = a.shape
     entries = [
@@ -38,7 +39,7 @@ def write_dng(path, cfa16, pattern="BGGR", black=(0, 0, 0, 0), white=65535,
         (271, ASCII, make),
         (272, ASCII, model),
         (273, LONG, None),              # StripOffsets, patched below
-        (274, SHORT, [1]),
+        (274, SHORT, [orientation]),
         (277, SHORT, [1]),
         (278, LONG, [h]),
         (279, LONG, [a.nbytes]),

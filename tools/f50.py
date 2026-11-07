@@ -72,6 +72,13 @@ WIN_WIDTH, WIN_HEIGHT = 2592, 1944
 WIN_READ_BYTES = 0x4CE300
 FRAME_BYTES = WIN_WIDTH * WIN_HEIGHT   # 5,038,848: one frame on EP 0x82, rows back to back
 CFA = "BGGR"                           # first line B G B G, second G R G R (datasheet)
+ORIENTATION = 2                        # TIFF Orientation: the sensor image is mirrored left-right
+
+# OV5620 output-bus MSB/LSB swap (undocumented, found by tools/f50sweep.py, docs/NOTES.md).
+# With it set, the 8 lines wired to the F50 carry data bits 0..7 instead of 9..2.
+SWAP_REG = None
+SWAP_MASK = 0
+SWAP_REVERSED = True                   # bytes arrive bit-reversed (datasheet Figure 12)
 
 
 def win_gain_reg(g):
@@ -314,6 +321,13 @@ class F50:
             (0x11, 0x40 | (clkdiv & 0x3F)), (0x00, gain_reg & 0x7F)])
         self.set_exposure(exposure)
         time.sleep(settle)
+
+    def bus_swap(self, on):
+        """Set or clear the sensor's output MSB/LSB swap bit (SWAP_REG/SWAP_MASK)."""
+        if SWAP_REG is None:
+            raise RuntimeError("bus-swap register not known")
+        v = self.read_regs([SWAP_REG])[SWAP_REG]
+        self.write_regs([(SWAP_REG, (v | SWAP_MASK) if on else (v & ~SWAP_MASK & 0xFF))])
 
     def frames(self, n=1, log=print):
         """n consecutive frames as a (n, 1944, 2592) uint8 array, in reads of up to 3
