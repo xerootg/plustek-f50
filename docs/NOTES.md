@@ -103,3 +103,28 @@ uses Jungo WinDriver only for streaming bulk reads (`WDU_StreamRead`).
 So every register write the scanner ever sees originates in `Scandrv.dll`.
 Recovering the init, lamp, calibration and scan-setup sequences from it is
 the remaining reverse-engineering job (delegated to the RE workbench).
+
+### Live results (2026-11-06, `tools/f50.py`)
+
+The mailbox protocol works from Linux with pyusb. Replies carry `0x1234` at
+bytes 2..3 on success (`0x5678` on error, from the firmware's interpreter).
+
+| Opcode | Reply | Meaning |
+|---|---|---|
+| 0x00 | `00 06 01 08` | firmware 0.6.1.8 (matches `Reg.ini` FWVersion) |
+| 0x01 | `01 02 04` | protocol 1.2.4 |
+| 0x0f | `02 02 82 03 81` | bulk EP 0x82, interrupt EP 0x81 |
+| 0x19 get | 3 | mode variable (firmware compares it with 0x0b elsewhere) |
+| 0x0a get | 0 | second mode variable |
+
+### What the register opcodes really are
+
+The firmware's register helpers write XDATA 0xE678/0xE679, which in the FX2
+register map are I2CS/I2DAT: the "registers" are an I2C slave at 7-bit address
+0x30. Opcode 0x0b = I2C write of (reg, value) pairs; 0x0c = write reg, read one
+byte. Opcodes 0x13/0x14 are generic I2C reads/writes to any address, and
+0x15/0x16 read/write 32-byte pages with a 16-bit address: the boot EEPROM.
+**Never send 0x16** (or 0x14 at the EEPROM address); `tools/f50.py` blocks
+them. At boot the firmware sets IFCONFIG=0xC3 (internal 48 MHz clock, slave
+FIFO mode), so the pixel stream is pushed into EP2's FIFO by the engine
+hardware; the host only configures the engine over I2C and reads bulk 0x82.
