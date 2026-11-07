@@ -89,3 +89,32 @@ Next: load film and run step 6; confirm B/R with a slide; see "Open questions" i
 - Keep heavy jobs (Ghidra headless, builds) sequential; the laptop is in use.
 - Don't ask the user questions mid-task; note open questions at the end of
   `docs/NOTES.md`.
+
+## Phase 2 (added 2026-11-07): squeeze the sensor
+
+7. **Find the OV5620 bus-swap register.** The datasheet (section "MSB/LSB
+   Swap") says the 10 output lines can be bit-reversed by a control register
+   but does not name it; only 54 of 256 registers are documented. Sweep the
+   undocumented registers with the backlight on: set candidate bits, grab one
+   frame, restore, and look for a frame whose values become the low byte
+   (`v & 0xff`) of the normal frame (bright flat field turning dark and
+   wrapping, bit-reversed noise). Writes are volatile; a USB replug resets the
+   sensor. Skip 0x12 bit 7 (soft reset) and the documented registers.
+8. **True 10-bit frames from pairs.** With the swap register known, capture
+   coarse (bits 9..2) and fine (bits 7..0) frames of the same static scene
+   and reconstruct `v = c*4 + wrap(f - c*4)`, choosing the wrap closest to
+   `c*4` (noise is about 6 LSB at 10 bits, so the 128 margin is safe). Add
+   this to `tools/f50raw.py` as the default when the register is known, and
+   write 10-bit DNGs (white level 1023 times the averaging factor).
+9. **More range than 10 bits.** Exposure bracketing at gain 1x: two or three
+   exposures, merged linearly after dark subtraction with per-pixel weights
+   that drop clipped samples. Combine with frame averaging. Output a 16-bit
+   linear DNG. Measure dynamic range on a real negative (densest and clearest
+   areas) and report it in stops.
+10. **Backlight.** Check whether the backlight is three LEDs that can be
+    switched separately (firmware/opcode or sensor-side GPIO); if they are
+    red, green and blue, per-colour exposures remove crosstalk through the
+    Bayer filters. Test only if cheap.
+11. **Validate on film.** The owner will leave a developed film strip in the
+    holder. Capture it with every mode (8-bit, 10-bit pair, bracketed) and
+    keep the outputs in `frames/` with a short comparison in `docs/NOTES.md`.
