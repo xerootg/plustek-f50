@@ -72,7 +72,10 @@ WIN_WIDTH, WIN_HEIGHT = 2592, 1944
 WIN_READ_BYTES = 0x4CE300
 FRAME_BYTES = WIN_WIDTH * WIN_HEIGHT   # 5,038,848: one frame on EP 0x82, rows back to back
 CFA = "BGGR"                           # first line B G B G, second G R G R (datasheet)
-ORIENTATION = 2                        # TIFF Orientation: the sensor image is mirrored left-right
+ORIENTATION = 1                        # TIFF Orientation default: as stored. Whether a scan reads
+                                       # mirrored depends on which side of the film faces the sensor
+                                       # (strip 1 read mirrored, strip 2 does not): set per scan with
+                                       # f50raw --orientation (2 = mirrored, 6/8 = rotated 90 cw/ccw)
 
 # OV5620 output-bus MSB/LSB swap (undocumented, found by tools/f50sweep.py, docs/NOTES.md).
 # With it set, the 8 lines wired to the F50 carry data bits 0..7 instead of 9..2.
@@ -240,7 +243,7 @@ class F50:
             time.sleep(3.0)
         return self.read_regs(SENSOR_REGS)
 
-    def capture(self, nbytes=WIN_READ_BYTES, timeout=6000, arm_timeout=10.0, log=print):
+    def capture(self, nbytes=WIN_READ_BYTES, timeout=None, arm_timeout=None, log=print):
         """Grab nbytes from the start of the next frame.
 
         Linux caps usbfs buffers at /sys/module/usbcore/parameters/usbfs_memory_mb (16 MB by
@@ -254,6 +257,15 @@ class F50:
         URB at once, so the 4 KiB device FIFO never overflows between reads (separate
         smaller reads drop bytes at each gap and shift the Bayer phase).
         """
+        # slower sensor clocks (raw_setup clkdiv) stretch both the frame period and the
+        # transfer: ~14 MB/s at CLKRC divider 1, proportionally slower above it
+        slow = max(1.0, (getattr(self, "clkdiv", 1) + 1) / 2.0)
+        period = getattr(self, "frame_period", 0.4 * slow)
+        nfr = -(-nbytes // FRAME_BYTES)
+        if timeout is None:
+            timeout = int(6000 + (nbytes / 14e6 * slow + nfr * period) * 1000 * 1.5)
+        if arm_timeout is None:
+            arm_timeout = max(10.0 * slow, 3 * period)
         try:
             usb.util.claim_interface(self.dev, 0)
         except usb.core.USBError:
@@ -306,7 +318,12 @@ class F50:
         """Analog gain register 0x00: (b6+1)(b5+1)(b4+1)(1+b[3:0]/16); 0 = 1x."""
         self.write_regs([(0x00, reg & 0x7F)])
 
-    def raw_setup(self, exposure=6, gain_reg=0, clkdiv=1, settle=1.5):
+    # line time at CLKRC divider 1 (PLL/4): a 2592x1944 frame + 388 VSYNC + 24 blanking lines
+    # streams in ~0.36 s, i.e. ~0.153 ms per line; slower dividers scale it.
+    LINE_S = 0.36 / (1944 + 388 + 24)
+    FRAME_FIT = 1900        # AEC (lines) that still fits a frame without extra blanking
+
+    def raw_setup(self, exposure=6, gain_reg=0, clkdiv=1, settle=1.5, dmln=None):
         """Sensor straight out: manual AEC/AGC/AWB, no frame drop, raw before CIP, no
         pixel cancelling, digital gain 1x, no AWB gains, no gamma, no clipping limits,
         no de-noise, full-size mode, no mirror/flip.
@@ -330,6 +347,16 @@ class F50:
             # toggling 0x71 bit 3 recomputes them (+24 LSB on every channel) and they stay
             *BLC_POWERON])
         self.set_exposure(exposure)
+        # Exposures longer than a frame: add vertical blanking lines (DMLN 0x46/0x47, used
+        # because COM3[3] = 1) so the frame is long enough. Measured: AEC 3800 with DMLN
+        # 2000 gives 1.92x the AEC 1800 signal, as (AEC + 388) predicts.
+        if dmln is None:
+            dmln = max(0x60, exposure - self.FRAME_FIT)   # 0x60 = the boot value
+        dmln = min(int(dmln), 0xFFFF)
+        self.write_regs([(0x46, dmln & 0xFF), (0x47, dmln >> 8)])
+        self.clkdiv = clkdiv
+        self.dmln = dmln
+        self.frame_period = (1944 + 388 + 24 + dmln) * self.LINE_S * max(1.0, (clkdiv + 1) / 2.0)
         time.sleep(settle)
 
     def bus_swap(self, on):

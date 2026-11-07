@@ -144,7 +144,7 @@ def stack8(s, n, chunk=3, log=print, max_seen=None):
     return st
 
 
-def stack10(s, n, chunk=3, coarse_frames=3, log=print, max_seen=None):
+def stack10(s, n, chunk=3, coarse_frames=4, settle_frames=2, log=print, max_seen=None):
     """Capture until n true 10-bit frames are accepted. One block of coarse frames (bits
     9..2) seeds a 10-bit reference; every later frame is a fine frame (bus swapped: bits
     0..7, bit-reversed) unwrapped against the running mean of the stack, so a deep 10-bit
@@ -152,8 +152,12 @@ def stack10(s, n, chunk=3, coarse_frames=3, log=print, max_seen=None):
     import f50
     rev8 = np.array([int(f"{i:08b}"[::-1], 2) for i in range(256)], np.uint8)
     s.bus_swap(False)
-    coarse = s.frames(coarse_frames)
+    # The first frames after a change of exposure straddle it (measured on film: 45,000
+    # pixels of a 4x step unwrapped 256 too high from a bad reference), so drop
+    # settle_frames before the coarse block
+    coarse = s.frames(settle_frames + coarse_frames)[settle_frames:]
     ref = coarse.astype(np.float64).mean(0) * 4 + 1.5
+    coarse_ref = ref.copy()
     clip = (coarse == 255).any(0)
     del coarse
     st = Stack(log=log)
@@ -182,6 +186,19 @@ def stack10(s, n, chunk=3, coarse_frames=3, log=print, max_seen=None):
         s.bus_swap(False)
     st.seconds = time.time() - t0
     st.clip = clip
+    # check: the finished stack must agree with the coarse reference to within noise; a
+    # whole multiple of 256 means the unwrap locked onto the wrong turn for that pixel
+    # (fixed here: every accepted frame of that pixel carried the same offset)
+    mean = st.mean()
+    k = np.rint((mean - coarse_ref) / 256.0)
+    k[clip] = 0
+    bad = k != 0
+    if bad.any():
+        o = -256.0 * k                   # same offset in every frame of that pixel
+        st.sq += 2 * o * st.sum + st.n * o * o
+        st.sum += o * st.n
+        log(f"  10-bit check: {int(bad.sum())} pixels were a whole turn off the coarse reference; corrected")
+    st.unwrap_fixed = int(bad.sum())
     return st
 
 
@@ -235,3 +252,40 @@ def flat_gain(flat, flat_dark):
             ref = float(ch[y0 // 2:y1 // 2, x0 // 2:x1 // 2].mean())
             g[i::2, j::2] = ch / ref
     return np.clip(g, 0.05, None)
+
+
+def defect_map(dark10, flat_gain_map, hot_sigma=8.0, hot_min=6.0, dead_frac=0.25, skip_rows=6):
+    """Hot pixels: dark master above its channel median by > max(hot_sigma robust sigma,
+    hot_min LSB10). Dead/weak/bright pixels: flat gain off the median of its 8 same-colour
+    neighbours by more than dead_frac. Returns a boolean (H, W) mask."""
+    bad = np.zeros(dark10.shape, bool)
+    for i in (0, 1):
+        for j in (0, 1):
+            d = dark10[i::2, j::2]
+            med = float(np.median(d))
+            sig = 1.4826 * float(np.median(np.abs(d - med)))
+            bad[i::2, j::2] |= d > med + max(hot_sigma * sig, hot_min)
+            g = flat_gain_map[i::2, j::2]
+            p = np.pad(g, 1, mode="edge")
+            nb = np.stack([p[1 + dy:1 + dy + g.shape[0], 1 + dx:1 + dx + g.shape[1]]
+                           for dy in (-1, 0, 1) for dx in (-1, 0, 1) if dy or dx])
+            loc = np.median(nb, 0)
+            bad[i::2, j::2] |= np.abs(g / loc - 1) > dead_frac
+    # rows 0-1 carry a constant (~134 LSB8) and rows 2-5 are optically black in every frame:
+    # not image, never "defects"
+    bad[:skip_rows] = False
+    return bad
+
+
+def fix_defects(cfa, bad):
+    """Replace each flagged pixel by the mean of its good same-colour neighbours at +-2 px
+    (horizontal and vertical); nothing else is touched."""
+    out = cfa.copy()
+    ys, xs = np.nonzero(bad)
+    h, w = cfa.shape
+    for y, x in zip(ys, xs):
+        vals = [cfa[yy, xx] for yy, xx in ((y - 2, x), (y + 2, x), (y, x - 2), (y, x + 2))
+                if 0 <= yy < h and 0 <= xx < w and not bad[yy, xx]]
+        if vals:
+            out[y, x] = float(np.mean(vals))
+    return out

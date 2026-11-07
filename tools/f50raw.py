@@ -18,14 +18,16 @@ Options:
   --calib [DIR]  subtract the dark master for this exposure setting and divide by the flat
                master (frames/masters by default; build them with tools/f50master.py).
                10-bit masters are used when present, else 8-bit ones.
-  --bracket SPEC exposure bracket, e.g. "6,1800,1800:3" (AEC lines[:CLKRC divider[:gain]]).
+  --bracket SPEC exposure bracket, e.g. "2400::0:400,10764::0:200" (AEC lines[:CLKRC divider
+               [:gain[:frames]]]; empty fields take the defaults). AEC beyond one frame works:
+               raw_setup adds vertical blanking (DMLN) to fit it.
                Each step is stacked and dark-subtracted; exposure ratios are measured from
                the data; the merge weights each step by its exposure and drops pixels that
                clipped in any frame of that step.
   --dark       backlight off (raw dark capture, no calibration).
 
-Output: OUT.dng (16-bit linear CFA, BGGR, Orientation 2 because the F50's image is mirrored
-left-right), OUT.pgm (same samples, as stored), OUT.json (settings, frames used/rejected,
+Output: OUT.dng (16-bit linear CFA, BGGR, TIFF Orientation from --orientation: whether the
+image reads mirrored depends on which side of the film faces the sensor), OUT.pgm (same samples, as stored), OUT.json (settings, frames used/rejected,
 noise versus N, noise floor and dynamic range per channel, timing).
 Sample scale: 10-bit units x 64 (single exposure) or the shortest bracket step's clip point
 = 65535 (bracket). Calibrated output has black 0. Uncalibrated output keeps the sensor's
@@ -156,17 +158,18 @@ def neutral_from(fm):
     return [round(v / max(nt), 4) for v in nt]
 
 
-def capture_stack(s, args, exposure, clkdiv, gain, dark=False):
+def capture_stack(s, args, exposure, clkdiv, gain, dark=False, frames=None):
     """One stacked exposure: returns (mean10, clip mask, Stack)."""
+    frames = frames or args.frames
     s.lamp(not dark)
     s.raw_setup(exposure=exposure, gain_reg=gain, clkdiv=clkdiv)
     try:
         if args.tenbit:
-            st = stack.stack10(s, args.frames)
+            st = stack.stack10(s, frames)
             m = st.mean()
             clip = st.clip | (st.max >= 1020) | (m > SAFE10)
             return m, clip, st
-        st = stack.stack8(s, args.frames)
+        st = stack.stack8(s, frames)
         m = st.mean() * 4 + 1.5
         return m, (st.max == 255) | (m > SAFE10), st
     finally:
@@ -175,29 +178,82 @@ def capture_stack(s, args, exposure, clkdiv, gain, dark=False):
 
 
 def merge_bracket(steps, lins, clips, log=print):
-    """Linear HDR merge of dark-subtracted stacks. Returns radiance in units of the longest
-    step, the relative exposure of each step (longest = 1), and the pixels clipped in every
-    step (filled from the shortest)."""
+    """Linear HDR merge of dark-subtracted stacks.
+
+    Exposure ratios come from low-level pixels only (longer step 30..250 LSB10, both steps
+    unclipped). Each longer step's linear ceiling is then found per CFA channel: the level
+    (25-LSB bins) above which its ratio to the next shorter step departs by more than 1.5 %
+    from that exposure ratio. Measured on film: AEC 44220 saturates softly from ~400 LSB10,
+    far below code 1023. Samples above a step's ceiling, or clipped, get weight 0; the
+    others are weighted by exposure. Returns radiance in units of the longest step, the
+    relative exposures (longest = 1), the pixels clipped in every step, and the ceilings."""
     order = sorted(range(len(steps)), key=lambda i: float(lins[i][CTR[0]:CTR[1], CTR[2]:CTR[3]].mean()))
     rel = {order[0]: 1.0}
+    ceil = {order[0]: [SAFE10 - 30.0] * 4}
+    masks = {i: clips[i].copy() for i in range(len(steps))}
+    turn_fixes = {}
     for a, b in zip(order, order[1:]):
-        ok = ~clips[a] & ~clips[b] & (lins[a] > 25) & (lins[b] < 900)
-        if ok.sum() < 1000:
-            ok = ~clips[b] & (lins[a] > 5)
-        r = float(np.median(lins[b][ok] / lins[a][ok]))
+        la, lb = lins[a], lins[b]
+        ok = ~masks[a] & ~masks[b] & (la > 5) & (lb > 30) & (lb < 250)
+        r = float(np.median(lb[ok] / la[ok]))
         rel[b] = rel[a] * r
-        log(f"  step {steps[b]} / {steps[a]}: measured exposure ratio {r:.3f} over {int(ok.sum())} px")
+        # 10-bit unwrap check across steps: the longer step must equal r x the shorter one
+        # within noise; a whole multiple of 256 off means its stack locked onto the wrong
+        # turn for that pixel (seen on film before stack10 dropped its settling frames)
+        pred = r * la
+        okk = ~masks[a] & ~masks[b] & (la > 2) & (pred < 700)
+        k = np.where(okk, np.rint((lb - pred) / 256.0), 0)
+        fix = (k != 0) & (np.abs(lb - 256 * k - pred) < 40)
+        if fix.any():
+            lins[b] = lb = lb - 256 * k * fix
+            turn_fixes[b] = int(fix.sum())
+            log(f"  step {steps[b]}: {int(fix.sum())} pixels a whole 256-turn off the shorter step; corrected")
+        cb = []
+        for k, (i, j) in enumerate(((0, 0), (0, 1), (1, 0), (1, 1))):
+            pa, pb = la[i::2, j::2], lb[i::2, j::2]
+            okc = ~masks[a][i::2, j::2] & ~masks[b][i::2, j::2] & (pa > 5)
+            ratio = pb[okc] / pa[okc]
+            lev = pb[okc]
+            c = 1023.0
+            for lo_ in range(250, 1000, 25):
+                sel = (lev >= lo_) & (lev < lo_ + 25)
+                if sel.sum() < 200:
+                    continue
+                if abs(float(np.median(ratio[sel])) / r - 1) > 0.015:
+                    c = float(lo_)
+                    break
+            cb.append(c)
+            masks[b][i::2, j::2] |= pb > c
+        ceil[b] = cb
+        log(f"  step {steps[b]} / {steps[a]}: exposure ratio {r:.4f} over {int(ok.sum())} px; "
+            f"linear ceiling per channel (B Gb Gr R) {cb}")
     top = max(rel.values())
     num = np.zeros_like(lins[0])
     den = np.zeros_like(lins[0])
     for i in range(len(steps)):
-        w = rel[i] * (~clips[i])
+        w = rel[i] * (~masks[i])
         num += w * lins[i] * (top / rel[i])
         den += w
     fallback = den == 0
     num[fallback] = lins[order[0]][fallback] * top / rel[order[0]]
     den[fallback] = 1
-    return num / den, {i: rel[i] / top for i in rel}, fallback
+    merge_bracket.turn_fixes = {str(list(steps[i])): v for i, v in turn_fixes.items()}
+    return num / den, {i: rel[i] / top for i in rel}, fallback, {str(list(steps[i])): ceil[i] for i in ceil}
+
+
+class SavedStack:
+    """Stand-in for stack.Stack when reprocessing saved step stacks (--from-steps)."""
+
+    def __init__(self, rec, mean):
+        self.n, self.seen, self.rejected = rec["frames_used"], rec["frames_seen"], rec["rejected"]
+        self.seconds = rec["capture_seconds"]
+        self._rec, self._mean = rec, mean
+
+    def summary(self):
+        return {"noise_vs_n": self._rec["noise_vs_n"], "noise_final": self._rec["noise_final"]}
+
+    def mean(self):
+        return self._mean
 
 
 def main():
@@ -211,6 +267,13 @@ def main():
     ap.add_argument("--bracket", help='exposure bracket "AEC[:CLKDIV[:GAIN]],..." merged to a 16-bit linear DNG')
     ap.add_argument("--calib", nargs="?", const=MASTERS, help=f"dark and flat masters directory (default {MASTERS})")
     ap.add_argument("--dark", action="store_true", help="backlight off (dark capture)")
+    ap.add_argument("--from-steps", help="reprocess: load the stacks saved by --save-steps under this OUT "
+                    "prefix (with its .json) instead of capturing")
+    ap.add_argument("--orientation", type=int, default=f50.ORIENTATION,
+                    help="TIFF Orientation for the DNG: 1 as stored, 2 mirrored, 6/8 rotated cw/ccw, "
+                         "5/7 transposed (which applies depends on how the film sits in the holder)")
+    ap.add_argument("--save-steps", action="store_true", help="also save each step's stack (float32 .npy) and clip mask")
+    ap.add_argument("--no-defects", action="store_true", help="with --calib: do not replace hot/dead pixels")
     ap.add_argument("--black-from", help="uncalibrated output: tag the black level from a dark .json of this tool")
     ap.add_argument("--neutral-from", help="uncalibrated output: AsShotNeutral from a bare-backlight .json of this tool")
     args = ap.parse_args()
@@ -218,22 +281,36 @@ def main():
         raise SystemExit("--calib and --dark do not go together")
 
     t0 = time.time()
-    s = f50.F50()
-    info = {"frames": args.frames, "tenbit": args.tenbit, "cfa": f50.CFA, "orientation": f50.ORIENTATION,
+    s = None if args.from_steps else f50.F50()
+    prev = json.load(open(args.from_steps + ".json")) if args.from_steps else None
+    info = {"frames": args.frames, "tenbit": args.tenbit, "cfa": f50.CFA, "orientation": args.orientation,
             "gain_reg": args.gain, "clkdiv": args.clkdiv, "dark": args.dark}
     steps = None
+    step_frames = {}
     if args.bracket:
         steps = []
         for item in args.bracket.split(","):
             p = item.split(":")
-            steps.append((int(p[0]), int(p[1]) if len(p) > 1 else args.clkdiv, int(p[2], 0) if len(p) > 2 else args.gain))
+            steps.append((int(p[0]), int(p[1]) if len(p) > 1 and p[1] else args.clkdiv,
+                          int(p[2], 0) if len(p) > 2 and p[2] else args.gain))
+            if len(p) > 3:
+                step_frames[steps[-1]] = int(p[3])
     else:
         steps = [(args.exposure, args.clkdiv, args.gain)]
         info["exposure_lines"] = args.exposure
 
     lins, clips, per_step = [], [], {}
     for st_ in steps:
-        m10, clip, st = capture_stack(s, args, *st_, dark=args.dark)
+        if args.from_steps:
+            k = len(lins)
+            m10 = np.load(f"{args.from_steps}_step{k}_mean10.npy").astype(np.float64)
+            clip = np.load(f"{args.from_steps}_step{k}_clip.npy")
+            st = SavedStack(prev["steps"][str(list(st_))], m10)
+        else:
+            m10, clip, st = capture_stack(s, args, *st_, dark=args.dark, frames=step_frames.get(st_))
+        if args.save_steps and not args.from_steps:
+            np.save(f"{args.out}_step{len(lins)}_mean10.npy", m10.astype(np.float32))
+            np.save(f"{args.out}_step{len(lins)}_clip.npy", clip)
         summ = st.summary()
         rec = {"frames_used": st.n, "frames_seen": st.seen, "rejected": st.rejected,
                "capture_seconds": round(st.seconds, 1), "seconds_per_frame": round(st.seconds / max(st.n, 1), 3),
@@ -271,11 +348,13 @@ def main():
 
     neutral = (1.0, 1.0, 1.0)
     if len(steps) > 1:
-        rad, rel, fallback = merge_bracket(steps, lins, clips)
+        rad, rel, fallback, ceilings = merge_bracket(steps, lins, clips)
+        info["linear_ceiling_10bit"] = ceilings
+        info["unwrap_turns_corrected"] = getattr(merge_bracket, "turn_fixes", {})
         info["relative_exposure"] = {str(list(steps[i])): round(v, 5) for i, v in rel.items()}
         info["clipped_in_all_steps"] = round(float(fallback.mean()), 6)
         shortest = min(rel, key=rel.get)
-        clip_level = (per_step[str(list(steps[shortest]))].get("clip_10bit", 1023.0)) / rel[shortest]
+        clip_level = min(ceilings[str(list(steps[shortest]))]) / rel[shortest]
         longest = max(rel, key=rel.get)
         floor = per_step[str(list(steps[longest]))].get("floor_10bit")
     else:
@@ -293,6 +372,13 @@ def main():
         else:
             info["calibration"] = {"flat_warning": "no flat master: vignetting and PRNU not corrected"}
         info["calibration"]["dark"] = "per-step dark master (see steps)"
+        if not args.no_defects:
+            longest_step = steps[int(np.argmax([float(np.mean(l[CTR[0]:CTR[1], CTR[2]:CTR[3]])) for l in lins]))]
+            dk, _, dkn, _ = nearest_dark10(args.calib, *longest_step)
+            bad = stack.defect_map(dk, g if g is not None else np.ones_like(dk))
+            rad = stack.fix_defects(rad, bad)
+            info["calibration"]["defects_replaced"] = int(bad.sum())
+            info["calibration"]["defect_map_from"] = dkn
         info["black"] = 0
 
     if floor:
@@ -327,7 +413,7 @@ def main():
     f50.save_pgm(args.out + ".pgm", out16.tobytes(), W, H, 65535)
     write_dng(args.out + ".dng", out16.astype(np.uint16), pattern=f50.CFA, black=black, white=white,
               neutral=neutral, description=json.dumps({k: v for k, v in info.items() if k != "steps"}),
-              orientation=f50.ORIENTATION)
+              orientation=args.orientation)
     with open(args.out + ".json", "w") as f:
         json.dump(info, f, indent=1)
     short = {k: v for k, v in info.items() if k not in ("steps",)}
