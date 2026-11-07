@@ -148,3 +148,100 @@ bulk 0x82, demosaic on the PC. The Windows `Positive.map`/`Negative.map`
 12-bit LUTs are what the DLL applied afterwards and can be skipped.
 
 Registers 0x04 to 0x09 change between reads (live AEC/AGC state).
+
+## 2026-11-06 (later): Windows capture sequence, first frames on Linux
+
+Labels: **proven** = observed on the device or read directly in code;
+**inferred** = deduced, not yet tested.
+
+### Who programs the sensor (proven, from the decompiles)
+
+`Scandrv.dll` only builds mailbox commands for the firmware's own opcodes (1, 2, 5, 7,
+8, 9, 0x0a) and calls the COM server. The sensor setup and the bulk read both live in
+`WDUScan.exe` (decompiled with Ghidra headless into the private RE folder). COM vtable
+of the `WDUFilmScanner` object (offsets after IDispatch):
+
+| vtable | WDUScan function | Role |
+|---|---|---|
+| 0x2c | FUN_004032c0 -> FUN_00402930 | sensor setup (exposure, gain, WB, mode) |
+| 0x30 | FUN_004043b0 -> FUN_00404150 | capture N bytes from bulk 0x82 |
+| 0x34 | FUN_00403360 | interrupt EP 0x81 event value |
+| 0x38/0x3c | | raw control OUT/IN (Scandrv FUN_1000bb60/bc30) |
+| 0x28 | FUN_00403150 | sends opcode 0x16 (EEPROM page write). Never used by us. |
+
+Scandrv's scan path (FUN_100053b0) calls 0x2c with `(1, ExposureTime=600,
+Gain*0.01=1.20, 1, RGBGamma*0.01 = 1.80, 1.20, 1.00)`, then 0x30 with 0x4ce300 bytes,
+then demosaics the buffer as **0xa20 x 0x798 = 2592 x 1944** (FUN_10004780 for grey,
+FUN_10004330 into a 2592x1944x3 buffer for colour). The extra 1024 bytes of the
+0x4ce300 buffer are never used.
+
+### Sensor setup, WDUScan FUN_00402930 scan branch (proven)
+
+Read the 54 registers listed in `tools/f50.py` `SENSOR_REGS` (opcode 0x0c), edit,
+write all back (opcode 0x0b, 29 pairs per block):
+window HSTART=0x90 HSTOP=0x5a0 VSTART=8 VSTOP=0x560 (VSTOP's 9th bit is truncated by
+the 8-bit write; harmless because COM3 keeps full-size output); REG04 &= 0x3f (no
+mirror/flip); COM8 &= ~0x87 (AEC, AGC, AWB, fast AEC off); GAIN = f(1.20);
+RED/GREEN/BLUE = 1.80/1.20/1.00 x 64; exposure 600 lines; COM7 &= 0x87 (full res);
+CLKRC = 0x40 (divider on, /2); REG32[7:6] = 0; COM9 |= 0x06 (drop out-of-tolerance
+frames); AEW/AEB = 0x58/0x38; R/G/B gain limits = 0xe2; then write (0x80,0x09) and
+(0x81,0x07) (CIP on, black/white pixel cancelling on). Then an auto-gain loop: gain
+from 1.0 in 0.1 steps (clamped 0.1..3.9, max 21 steps, 300 ms apart) until YAVG (0x2f)
+is within 0x38..0x58. Finally exposure = 600>>3 = 75 lines and CLKRC = 0x43
+(PLL/8), sleep 3 s.
+
+Exposure bits per the driver: 0x04[2:0], 0x10 = e>>3, 0x45[5:0] = e>>10. The datasheet
+says 0x45 holds AEC[16:11], so the driver's e>>10 is a bug for e >= 1024 (it never
+uses such values). Gain conversion (FUN_00402220) is reg = trunc((g - hi)*16 + 0.5) + hi
+with hi = (trunc(g) & 0xfe)*8; for g < 2 that is just g*16, i.e. the driver's "1.0"
+is register 0x10 = 2x analog gain.
+
+### Capture, WDUScan FUN_00404150 and the firmware (proven)
+
+Host: opcode 7, opcode 5, reset pipe 0x82, read N bytes (Jungo stream, 3 s timeout,
+retries every 50 ms with pipe reset), opcode 7, drain, reset pipe; up to 6 attempts.
+
+Firmware: opcode 5 sets flag bit 0x20.4. The INT0 ISR (0x13b8, sensor VSYNC) checks
+it: when the mode variable 0x6c (opcode 0x19) is not 0x0b, it resets the EP2 FIFO and
+sets EP2CFG.VALID, then clears the flag. At boot (0x16ba) the firmware writes
+EP2CFG = 0xE8 and immediately clears VALID, and opcode 7 clears VALID again. So **EP2
+only exists between the first VSYNC after opcode 5 and the next opcode 7**, and the
+stream starts at the top of a frame. In mode 0x0b (not used by Windows) the ISR also
+does a FIFO reset at every VSYNC and opcode 7 leaves EP2 valid. The main loop sets flag
+bit 3 when EP2CS shows the FIFO full (overflow), which opcode 7 returns in reply[4].
+IFCONFIG = 0x43 after init: slave FIFO clocked by the sensor's PCLK. EP2 is
+quad-buffered 1024-byte buffers with AUTOIN length 0x200.
+
+Opcode 9 sub-command 4 with argument 1 (sent by Scandrv at open) sets port D bits 0..2
+(OED/IOD); inferred to be the backlight LEDs. Opcode 2 only acknowledges.
+
+### Linux results (proven)
+
+- Before EP2 is valid, xHCI reports the missing handshake as `-EPROTO` (libusb
+  LIBUSB_ERROR_IO), and EP 0x81 NAKs normally. After opcode 5 the first data arrives
+  0.1..0.8 s later (the next VSYNC).
+- Separate synchronous reads lose bytes at every gap between them (Bayer phase flips
+  at the 256 KiB read boundaries). One large read (libusb queues all URBs at once),
+  retried on -EPROTO until EP2 goes valid, gives a clean stream. Reads must be whole
+  512-byte packets (else `EOVERFLOW`) and under usbfs_memory_mb (16 MB by default).
+- The stream is frames back to back: rows of exactly 2592 bytes (autocorrelation),
+  and the vertical profile repeats every **1944** rows (mean |m[i]-m[i+L]| is 0.079 at
+  L=1944 against 0.15..0.44 for L = 1936..1968). The first rows of the stream match
+  rows 1944.. of the next frame, so the read starts on the first line of a frame.
+  **One frame = 2592 x 1944 x 1 byte = 5,038,848 bytes**; the Windows 0x4ce300 read is
+  that plus 1024 bytes of the next frame.
+- Throughput with CLKRC = 0x43: 7.1..7.2 MB/s, about 0.7 s per frame; CLKRC = 0x47
+  halves it (3.9 MB/s), so the rate is set by the sensor clock, not by USB.
+- Windows sequence replayed exactly (power-on registers restored first, then op 9(4,1),
+  op 2(1), FUN_00402930, op 7/5 + read): `captures/win_settings_frame0.pgm`, mean 254.6,
+  93 % of pixels at 255. With the bare backlight (no film) its auto-gain loop cannot
+  reach YAVG 0x38..0x58 and ends at the minimum; the result is overexposed, as the
+  Windows driver would be without film.
+- Raw-ish settings (COM8 manual, COM9 no frame drop, DSPEN 0x02 raw before CIP, DSP01
+  0, DGCTRL 1x, DSP09 AWB gains off, DSP0B gamma off, BOTLMT/TOPLMT 0/255, COM34 0,
+  gain 0, exposure 6 lines, CLKRC 0x43): `captures/raw8_e6_clk3_frame0.pgm`. A flat
+  backlight field with dust and fibres in focus, no seam. Channel means
+  (0,0)=240.0 (0,1)=202.2 (1,0)=201.6 (1,1)=138.6: the matching diagonal is green, so
+  the CFA is **BGGR** as the datasheet says (proven for the green diagonal; B vs R
+  inferred from the datasheet and the LED's blue-heavy spectrum).
+- Captures live in `captures/` (gitignored).
