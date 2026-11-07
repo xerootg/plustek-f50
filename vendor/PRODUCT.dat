@@ -1,0 +1,84 @@
+; DeviceId=USB ID,[USB ID],......
+
+; PortIF = Hardware Port I/F
+;	1: INSTEPP
+;	2: INSTUSB
+
+; ButtonOrder = Hardware Button Order
+;	1: Album-Copy-Mail-Web     		Button Id = 5,6,4,3
+;	2: Album-Fax-Copy-Mail	   		Button Id = 5,6,4,3
+;	3: PC_Fax-Mail-Scan-PC_Copy 		Button Id = 5,6,4,3    default
+;	4: MGI-Mail-Scan-PC_Fax-PC_Copy 	Button Id = 4,3,2,6,5
+;	5: copy-Ocr-Custom-Mail-Power Save	Button Id = 4,3,2,6,5
+;	6: copy-Mail-Album-WEB-OCR		Button Id = 4,3,2,6,5
+;	7: custom				Button Id =
+;	8: copy-OCR-Mail-Custom-Scan 		Button Id = 6,5,3,4,2
+;	9: copy-OCR-PowerSve-Mail-Custom 	Button Id = 1,2,3,4,5
+;	
+
+; AsicID = Main DSP ASIC ID
+;	#define ASIC_P98003         98003
+;	#define ASIC_P99002         99002
+;	#define ASIC_PO9831         983x
+;		Bit0:Button
+;		Bit1:TPA
+;		Bit2:1=9832,0=9831
+;		Bit3:ADF
+;	#define ASIC_PO6801         6801
+
+; HWGuide =
+;	A3 Guide	
+;	Slim Guide 
+; AutoCrop =
+;	0: No
+;	1: Yes
+;	2: Invalid
+
+;OEMName=		for guide used
+;	NB ScanTrack
+;	Plustek
+;	FounderScan
+;	Legend
+;	Obm
+
+;FolderName =                for TARGETDIR FOLDER & ICON
+
+[DefaultProductCode]
+;UPDATE_ADDRESS=http://home.kimo.com.tw/linfrankkimo/update/scanner.vbs
+OEMName=
+TitleName=Plustek SmartPhoto F50 Setup
+CaptionName=Plustek
+        ;SetupBmp為安裝前圖檔,設定為 .BMP
+SetupBmp=Ms.bmp
+        ;X 軸由右(原點)起向左移點數
+SetupBmpnx=0
+        ;Y 軸由下(原點)起向上移點數
+SetupBmpny=30		
+        ;Y 輸入序號 , N 選擇產品名稱
+MultiProduct=N		
+CD_Version=V4.1.1.1
+
+[SelectProduct]
+;最多 9個選項 for OEM 客戶
+Item0=A41
+
+[A41]
+; Microtek XT500 gt6816 + CIS
+Product=A41U
+
+;if you want to show XP_STATEMENT set "1"
+2KLogo=0
+
+Model=SmartPhoto F50
+FolderName = SmartPhoto F50
+TwainName =SmartPhoto F50
+DeviceId=USB\VID_07B3&PID_0B00
+PortIF = 2
+AsicID = 
+HWGuide = CIS Slim Guide
+AutoCrop=1
+ButtonOrder = 8
+TPA = 0
+ADF=0
+WebDriver = 1
+
