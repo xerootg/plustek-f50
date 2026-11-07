@@ -165,7 +165,7 @@ def capture_stack(s, args, exposure, clkdiv, gain, dark=False, frames=None):
     s.raw_setup(exposure=exposure, gain_reg=gain, clkdiv=clkdiv)
     try:
         if args.tenbit:
-            st = stack.stack10(s, frames)
+            st = stack.stack10(s, frames, dump=args.out)
             m = st.mean()
             clip = st.clip | (st.max >= 1020) | (m > SAFE10)
             return m, clip, st
@@ -313,6 +313,7 @@ def main():
             np.save(f"{args.out}_step{len(lins)}_clip.npy", clip)
         summ = st.summary()
         rec = {"frames_used": st.n, "frames_seen": st.seen, "rejected": st.rejected,
+               "resyncs": getattr(st, "resyncs", 0),
                "capture_seconds": round(st.seconds, 1), "seconds_per_frame": round(st.seconds / max(st.n, 1), 3),
                "noise_vs_n": summ["noise_vs_n"], "noise_final": summ["noise_final"],
                "clipped_fraction": round(float(clip.mean()), 6), "film_score": round(film_score(m10), 3),

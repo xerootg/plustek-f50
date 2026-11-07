@@ -144,11 +144,19 @@ def stack8(s, n, chunk=3, log=print, max_seen=None):
     return st
 
 
-def stack10(s, n, chunk=3, coarse_frames=4, settle_frames=2, log=print, max_seen=None):
+def stack10(s, n, chunk=3, coarse_frames=4, settle_frames=2, log=print, max_seen=None,
+            dump=None, resync_after=4, max_resyncs=3):
     """Capture until n true 10-bit frames are accepted. One block of coarse frames (bits
     9..2) seeds a 10-bit reference; every later frame is a fine frame (bus swapped: bits
     0..7, bit-reversed) unwrapped against the running mean of the stack, so a deep 10-bit
-    stack costs one frame per frame. Pixels at 255 in any coarse frame are clipped (1023)."""
+    stack costs one frame per frame. Pixels at 255 in any coarse frame are clipped (1023).
+
+    Recovery: after resync_after consecutive rejections the swap register is read back and
+    logged, the swap bit is re-asserted and capture continues (2026-11-07: on film at AEC
+    10764 every fine frame after the 10th was rejected with the same residual, consistent
+    with the bus swap having reverted or a stale byte in the FIFO). The first rejected raw
+    frames are saved as DUMP_rejectI.npy when dump is given. After max_resyncs the step is
+    abandoned with an error instead of burning the rest of max_seen."""
     import f50
     rev8 = np.array([int(f"{i:08b}"[::-1], 2) for i in range(256)], np.uint8)
     s.bus_swap(False)
@@ -164,6 +172,7 @@ def stack10(s, n, chunk=3, coarse_frames=4, settle_frames=2, log=print, max_seen
     max_seen = max_seen or int(n * 1.5) + 6
     t0 = time.time()
     s.bus_swap(True)
+    streak, resyncs, dumped = 0, 0, 0
     try:
         while st.n < n and st.seen < max_seen:
             k = min(chunk, n - st.n)
@@ -171,12 +180,31 @@ def stack10(s, n, chunk=3, coarse_frames=4, settle_frames=2, log=print, max_seen
             if len(data) != f50.FRAME_BYTES * k:
                 st.rejected.append((st.seen, f"short read {len(data)} of {f50.FRAME_BYTES * k}"))
                 st.seen += k
-                continue
-            for fr in np.frombuffer(data, np.uint8).reshape(k, H, W):
-                lo = rev8[fr].astype(np.float64)
-                v = np.clip(lo + 256 * np.rint((ref - lo) / 256.0), 0, 1023)
-                v[clip] = 1023
-                st.add(v.astype(np.uint16))
+                streak += k
+            else:
+                for fr in np.frombuffer(data, np.uint8).reshape(k, H, W):
+                    lo = rev8[fr].astype(np.float64)
+                    v = np.clip(lo + 256 * np.rint((ref - lo) / 256.0), 0, 1023)
+                    v[clip] = 1023
+                    if st.add(v.astype(np.uint16)):
+                        streak = 0
+                        continue
+                    streak += 1
+                    if dump and dumped < 3:
+                        path = f"{dump}_reject{st.seen - 1}.npy"
+                        np.save(path, fr)
+                        dumped += 1
+                        log(f"  saved rejected raw frame to {path}")
+            if streak >= resync_after:
+                reg = s.read_regs([f50.SWAP_REG])[f50.SWAP_REG]
+                resyncs += 1
+                log(f"  resync {resyncs}: {streak} frames rejected in a row; reg 0x{f50.SWAP_REG:02x} = "
+                    f"0x{reg:02x} (swap bit {'set' if reg & f50.SWAP_MASK else 'CLEAR'}); re-asserting swap")
+                if resyncs > max_resyncs:
+                    raise RuntimeError(f"stack10: frames still rejected after {max_resyncs} resyncs "
+                                       f"(last: {st.rejected[-1][1]}); {st.n} of {n} frames stacked")
+                s.bus_swap(True)
+                streak = 0
             if st.n:
                 ref = st.mean()
             if st.n and (st.n % 30 < k):
@@ -199,6 +227,7 @@ def stack10(s, n, chunk=3, coarse_frames=4, settle_frames=2, log=print, max_seen
         st.sum += o * st.n
         log(f"  10-bit check: {int(bad.sum())} pixels were a whole turn off the coarse reference; corrected")
     st.unwrap_fixed = int(bad.sum())
+    st.resyncs = resyncs
     return st
 
 
