@@ -103,6 +103,10 @@ Earlier next step: load film and run step 6; confirm B/R with a slide; see "Open
    (`v & 0xff`) of the normal frame (bright flat field turning dark and
    wrapping, bit-reversed noise). Writes are volatile; a USB replug resets the
    sensor. Skip 0x12 bit 7 (soft reset) and the documented registers.
+   Status 2026-11-07: the 16-bit-FIFO alternative is ruled out (the FIFO's
+   upper-byte pins PD0..PD2 are the backlight outputs, docs/re/06). The swap
+   register is the only software path; a hardware path would mean rewiring
+   the backlight to free PD0/PD1 and routing sensor Y1/Y0 to them.
 8. **True 10-bit frames from pairs.** With the swap register known, capture
    coarse (bits 9..2) and fine (bits 7..0) frames of the same static scene
    and reconstruct `v = c*4 + wrap(f - c*4)`, choosing the wrap closest to
