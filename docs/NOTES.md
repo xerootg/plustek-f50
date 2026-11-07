@@ -317,9 +317,10 @@ Film is in the holder now: a colour negative strip (street scenes). Film detecti
   0.13 at CFA (0,0), 0.20 at the greens and 0.30 at (1,1): the orange mask passes red most
   and blue least, so (1,1) is R and (0,0) is B. BGGR holds (open question 1 closed), and a
   2x2-binned inversion renders natural colours.
-- **Orientation.** The sensor image is mirrored left-right (sign text reads backwards),
-  upright otherwise. `f50.ORIENTATION = 2`; `dng.write_dng(orientation=)` writes TIFF
-  Orientation 2. Previews for the owner: `frames/preview_negstrip.png` (first seating, frame
+- **Orientation.** *(Corrected later the same night: mirroring depends on which side of
+  the film faces the sensor, not on the sensor. Strip 1 read mirrored, strip 2 reads
+  correctly as stored. The DNG Orientation is now set per scan with `f50raw --orientation`;
+  see "Phase 4".)* The first strip's image read mirrored left-right (sign text backwards). Previews for the owner: `frames/preview_negstrip.png` (first seating, frame
   cut on the right) and `frames/preview_negstrip2.png` (re-seated on the notch; mirror-
   corrected; ~36 px of film base on the left, the frame just fits, holder masks the top
   ~20 and bottom ~175 rows).
@@ -540,3 +541,132 @@ the JSON.
 - Registers 0x3e/0x3f are never written (0x3e = 0x17 hung the controller until a replug).
   0x71 bit 3 recomputes the black-level registers (now pinned by raw_setup).
 - Firmware mode variable 0x0b (opcode 0x19) and faster retry (ADDVS = 0) still untested.
+
+
+## 2026-11-07 night: Phase 4, the best picture of the loaded negative (steps 16-18)
+
+Frame: a colour negative, portrait shot lying sideways in the holder (two people, a
+hand-lettered cardboard sign). Everything below was measured on this frame.
+
+### Corrections found on the way (all fixed in the code)
+
+- **Orientation is per scan, not per sensor.** With the data as stored and rotated 90
+  degrees CCW, the people stand upright and the sign reads left to right ("This is the
+  Government our FOUNDERS WARNED US about!!"), checked by rendering all four flip/rotate
+  candidates side by side. Strip 1 read mirrored, so the strip was seated the other way up
+  then. `f50.ORIENTATION` defaults to 1; `f50raw --orientation 8` for this scan (TIFF 8 =
+  display rotated 90 CCW). darktable honours the tag; **LibRaw/rawpy do not apply the
+  mirrored orientations correctly** (rawpy reports flip 1 for Orientation 2 and the result
+  is not the TIFF meaning), so `f50positive.py` asks LibRaw for no flip and applies the
+  tag itself.
+- **Rows 0-1 of every frame are a constant ~134 (8-bit) and rows 2-5 are optically black**;
+  not image. The defect map ignores them.
+- **Long exposures.** AEC beyond one frame works by adding vertical blanking: DMLN
+  (0x46/0x47) = AEC - 1900 (min 0x60, the boot value). Measured ratios between 400-frame
+  stacks: AEC 10764 / 2400 = 4.090, AEC 44220 / 10764 = 4.095, against 4.000 / 4.000 from
+  (AEC + 388). Frame period 0.77 s (AEC 2400, 10-bit), 2.17 s (10764), 8.71 s (44220).
+  CLKRC dividers of 15 and 31 end the bulk read with a short packet (unusable); DMLN is
+  the way to long exposures.
+- **Long exposures saturate early and softly.** Per-channel linear ceilings, found as the
+  level where a step's ratio to the next shorter step leaves the exposure ratio by > 1.5 %:
+  AEC 10764: Gr 675, R 575 LSB10 (B, Gb fine to 1023); AEC 44220: B/Gb 250, Gr 450, R 475.
+  The merge now finds these from the data and drops samples above them.
+- **10-bit unwrap errors after a setting change.** The coarse reference frames taken right
+  after an exposure change were wrong for some pixels, and the fine stack then locked onto
+  the wrong 256-turn: 45,632 pixels of the AEC 10764 stack and 7,062 of the AEC 44220 stack
+  were exactly +-256/512 off (seen as coloured dashes in bright areas, identical in every
+  demosaic). Fixed twice: `stack10` now drops 2 settling frames and checks the finished
+  stack against its coarse reference (whole turns corrected, variance kept exact), and the
+  bracket merge checks each longer step against the shorter step's prediction and removes
+  whole turns. The captured stacks were repaired from the saved step files.
+- Dark current is visible at long exposures: black rises 29.3 -> 31.3 (B) at AEC 10764 and
+  hot pixels (> median + 32 LSB10) go 102 -> 317, so every step has its own dark master.
+- The sweep left no register changed: after `raw_setup()` the full register file equals the
+  pre-sweep snapshot except DMLN (now pinned to its boot value) and the live AEC/YAVG
+  registers; 0x54 is 0 except inside the fine capture.
+
+### Capture (step 16)
+
+Base exposure: the clearest film (the clear border along the frame edge) at AEC 1800 peaked
+at R 560 LSB10 (p99.99); AEC 2400 keeps it below the 720 ceiling. The densest scene areas sat
+only ~3 LSB10 above black at that exposure, so the brackets matter. Exact commands:
+
+```
+sudo python3 -I tools/f50master.py dark --tenbit --exposure 2400  --frames 200   # 2.3 min
+sudo python3 -I tools/f50master.py dark --tenbit --exposure 10764 --frames 100   # 3.8 min
+sudo python3 -I tools/f50master.py dark --tenbit --exposure 44220 --frames 64    # 9.6 min
+sudo python3 -I tools/f50raw.py frames/p4_neg_hdr --tenbit --calib --save-steps --frames 100 \
+    --bracket "2400::0:400,10764::0:200,44220::0:100"                           # 27.6 min
+# re-merge from the saved stacks (no capture), with this scan's orientation:
+.venv/bin/python tools/f50raw.py frames/p4_neg_hdr2 --from-steps frames/p4_neg_hdr --tenbit \
+    --calib --frames 100 --orientation 8 --bracket "2400::0:400,10764::0:200,44220::0:100"
+```
+
+700 frames, 0 rejected. Flat: the 200-frame 10-bit flat (bare backlight, AEC 6) with its
+dark; one flat serves every exposure (multiplicative). Defects: 2,000 hot pixels from the
+AEC 44220 dark replaced by their same-colour neighbours (nothing else touched spatially).
+
+### Archival master (step 17)
+
+`frames/p4_neg_hdr2.dng`: 16-bit linear BGGR CFA, black 0, white 65535 (= the base step's
+720 ceiling), Orientation 8, AsShotNeutral from the backlight. Scale 5.434 per 10-bit unit
+of the longest step.
+
+### Positive (step 17)
+
+`.venv/bin/python tools/f50positive.py frames/p4_neg_hdr2.dng OUT --demosaic dcb [--neutral BOXES]`:
+LibRaw demosaic in camera RGB, film base measured from the clear border (bottom band of
+the sensor frame; camera RGB 55901 / 47145 / 39843), density D = log10(base / x), print
+model L = mid x 10^(D' / 0.6) with a black point at the film's shadow floor and a Reinhard
+shoulder, sRGB. Outputs a 16-bit TIFF and an sRGB JPEG.
+
+- **Demosaic**: DCB (with enhancement), DHT and AAHD compared on 100 % crops; once the
+  unwrap errors were fixed all three are clean on edges and fine texture. DCB kept.
+- **Chromatic aberration**: none to correct. `tools/f50ca.py` cross-correlates R and B
+  against G in 256-px tiles over the frame: radial scale k_R = 0.999991, k_B = 1.000004,
+  i.e. <= 0.014 px at the corners, residual 0.02-0.03 px. The pink/green fringes seen in
+  the first rendering were the unwrap errors, not the lens; no CA correction applied.
+- **Colour**: three neutral models compared. (a) grey world on density (median + 99th
+  percentile neutral): slightly cool, flat. (b) **white sneakers as the neutral reference**
+  (film base = density 0, per-channel density scale so the sneakers are grey, sneakers at
+  0.75 linear, gentle S-curve 0.2): natural skin, red brick, white shoes; **chosen**.
+  (c) asphalt as neutral at 0.10: darker, duller. (d) darktable 5.6.2 negadoctor
+  (`tools/f50negadoctor.py`, Dmin = the measured base, D_max 1.6, no white-balance pick):
+  similar tonality but cooler, shoes bluish; (b) is more faithful. The scene is autumn: the
+  grass is covered in fallen leaves, hence its olive colour. There is no camera colour
+  matrix (no calibration target), so saturation is the sensor's own, somewhat muted.
+
+Final files (gitignored, `frames/`): **`p4_pos_dcb_sneakers.tif`** (16-bit sRGB, 1720 x 2566,
+upright) and `.jpg`; grey-world version `p4_pos_dcb.tif`; negadoctor comparison
+`p4_pos_negadoctor.jpg`; archival master `p4_neg_hdr2.dng` (+ `.json`), per-step stacks
+`p4_neg_hdr_step{0,1,2}_{mean10,clip}.npy`.
+
+### Proof (step 18)
+
+| | value |
+|---|---|
+| per-frame temporal noise, base step (lit, 10-bit) | B 5.3, G 5.9, R 6.7 LSB10 |
+| stack standard error, base step, 400 frames | B 0.27, G 0.29, R 0.34 LSB10 (1/sqrt(N) throughout) |
+| dark read noise per frame | 1.6-1.7 LSB10 |
+| merged noise floor (longest-step units) | 0.28-0.32 LSB10 |
+| linear ceiling of the base step, in longest-step units | 12,061 |
+| **dynamic range captured** | **15.2-15.4 stops** (ceiling / floor) |
+| film: clear border vs densest 16-px area | 3.2-3.5 stops (density 0.97-1.07) |
+| densest area / dark floor | ~2,400-3,200 x |
+| capture time, 700 frames + 3 darks | 27.6 + 15.7 min; processing ~10 s |
+
+This negative is thin (density range ~1.0 above base), so the 15-stop capture holds it with
+a wide margin; the brackets serve to lift the dense highlights far above the noise.
+
+100 % crop of the final picture (sneakers, jeans, asphalt; DCB, sneaker neutral):
+
+![100% crop](img/p4_crop100_sneakers.jpg)
+
+### Still open after Phase 4
+
+- No colour calibration (camera matrix): needs a target (IT8 slide or a ColorChecker shot
+  on film). Saturation is the sensor's raw response.
+- Long exposures saturate softly from ~250-675 LSB10 depending on channel and exposure; the
+  merge avoids that range, the cause (dark current plus a full-well effect?) is unexplored.
+- LibRaw-based viewers may show mirrored-orientation DNGs wrongly (darktable is fine).
+- Throughput (~14 MB/s) and an FX2-side look at it remain as before.

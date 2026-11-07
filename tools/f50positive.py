@@ -77,8 +77,8 @@ def find_regions(img, margin=140):
     y0, y1, x0, x1 = int(lit_r[0]) + 4, int(lit_r[-1]) - 4, int(lit_c[0]) + 4, int(lit_c[-1]) - 4
     rows_in, cols_in = np.median(g[:, x0:x1], 1), np.median(g[y0:y1], 0)
     cands = {"top": (rows_in[y0:y0 + margin], "r", y0), "bottom": (rows_in[y1 - margin:y1], "r", y1 - margin),
-             "left": (cols_in[x0:x0 + margin] if x0 + margin < w else cols_in[:margin], "c", x0),
-             "right": (cols_in[x1 - margin - x0:x1 - x0], "c", x1 - margin)}
+             "left": (cols_in[x0:x0 + margin], "c", x0),
+             "right": (cols_in[x1 - margin:x1], "c", x1 - margin)}
     best, bval = None, -1
     for k, (prof, kind, off) in cands.items():
         v = float(np.percentile(prof, 95))
@@ -115,6 +115,10 @@ def main():
     ap.add_argument("--lo", type=float, default=0.2, help="black-point percentile (of mean density)")
     ap.add_argument("--hi", type=float, default=99.0, help="highlight percentile used to balance the channels")
     ap.add_argument("--white", type=float, default=99.9, help="white-point percentile for the shoulder")
+    ap.add_argument("--neutral", help="neutral reference box(es) X0,Y0,X1,Y1[;...] in output coordinates "
+                    "(before --rotate): per-channel density scaled so they come out grey")
+    ap.add_argument("--neutral-value", type=float, default=0.18, help="linear value of the neutral patch")
+    ap.add_argument("--curve", type=float, default=0.0, help="gentle S-curve strength (0 = none, ~0.2 mild)")
     ap.add_argument("--crops", action="store_true", help="also write 100%% crops (JPEG) of 3 regions")
     args = ap.parse_args()
 
@@ -130,23 +134,45 @@ def main():
     neg = img[fy0:fy1, fx0:fx1]
     d = np.log10(base / np.maximum(neg, 1.0))
     valid = (d < 2.7).all(-1) & (d > -0.5).all(-1)
-    # neutral axis: per-channel density is shifted so the image median is 0 in every channel
-    # (grey world at the midtones) and scaled so the --hi percentile (highlights, dense on
-    # the negative) is also equal across channels; this neutralises the orange mask and the
-    # different contrast of the three dye layers, as negadoctor's Dmin / white balance do
-    med = np.array([np.median(d[..., c][valid]) for c in range(3)])
-    hi = np.array([np.percentile(d[..., c][valid], args.hi) for c in range(3)])
-    slope = (hi - med).mean() / (hi - med)
-    dp = (d - med) * slope
     gamma = args.film_gamma
-    # print: scene-linear L = mid_grey * 10^(D'/gamma); black point at the film's shadow floor;
-    # Reinhard shoulder with white at the --white percentile
-    lin = args.mid * np.power(10.0, dp / gamma)
-    lb = args.mid * 10 ** (np.percentile(dp.mean(-1)[valid], args.lo) / gamma)
-    lin = np.clip((lin - lb) / (1 - lb), 0, None)
-    wpt = args.mid * 10 ** (np.percentile(dp.mean(-1)[valid], args.white) / gamma)
+    neutral_info = None
+    if args.neutral:
+        # neutral-reference model (negadoctor-like): film base is density 0 in every channel
+        # (it prints as black), and the per-channel density scale makes the chosen scene
+        # patch(es) neutral; the patch mean is placed at --neutral-value (linear)
+        boxes = [tuple(int(v) for v in b.split(",")) for b in args.neutral.split(";")]
+        pts = np.concatenate([d[y0:y1, x0:x1].reshape(-1, 3) for x0, y0, x1, y1 in boxes])
+        dn = np.median(pts, 0)
+        slope = dn.mean() / dn
+        dp = d * slope
+        med = hi = dn
+        lin = args.neutral_value * np.power(10.0, (dp - dn.mean()) / gamma)
+        lb = args.neutral_value * 10 ** ((np.percentile(dp.mean(-1)[valid], args.lo) - dn.mean()) / gamma)
+        lin = np.clip((lin - lb) / (1 - lb), 0, None)
+        wpt = args.neutral_value * 10 ** ((np.percentile(dp.mean(-1)[valid], args.white) - dn.mean()) / gamma)
+        wpt = max(wpt, 1.0)
+        neutral_info = {"boxes": boxes, "patch_density": [round(float(v), 4) for v in dn]}
+    else:
+        # neutral axis: per-channel density is shifted so the image median is 0 in every
+        # channel (grey world at the midtones) and scaled so the --hi percentile (highlights,
+        # dense on the negative) is also equal across channels
+        med = np.array([np.median(d[..., c][valid]) for c in range(3)])
+        hi = np.array([np.percentile(d[..., c][valid], args.hi) for c in range(3)])
+        slope = (hi - med).mean() / (hi - med)
+        dp = (d - med) * slope
+        # print: scene-linear L = mid_grey * 10^(D'/gamma); black point at the film's shadow
+        # floor; Reinhard shoulder with white at the --white percentile
+        lin = args.mid * np.power(10.0, dp / gamma)
+        lb = args.mid * 10 ** (np.percentile(dp.mean(-1)[valid], args.lo) / gamma)
+        lin = np.clip((lin - lb) / (1 - lb), 0, None)
+        wpt = args.mid * 10 ** (np.percentile(dp.mean(-1)[valid], args.white) / gamma)
     lin = lin * (1 + lin / wpt ** 2) / (1 + lin)
-    out = srgb(lin)
+    if args.curve:
+        # gentle display contrast: a mild S on the sRGB-encoded value (0 and 1 fixed)
+        e = srgb(lin)
+        out = np.clip(e + args.curve * e * (1 - e) * (2 * e - 1) * 2, 0, 1)
+    else:
+        out = srgb(lin)
     rot = {"cw": -1, "ccw": 1, "180": 2, "none": 0}[args.rotate]
     if rot:
         out = np.rot90(out, rot)
@@ -160,6 +186,7 @@ def main():
             "density_median": [round(float(v), 4) for v in med], "density_highlight": [round(float(v), 4) for v in hi],
             "channel_slope": [round(float(v), 4) for v in slope], "film_gamma": gamma, "mid_grey": args.mid,
             "black_lin": round(float(lb), 5), "white_lin": round(float(wpt), 3),
+            "neutral": neutral_info, "curve": args.curve,
             "rotate": args.rotate, "size": list(out16.shape)}
     if args.crops:
         h, w = out16.shape[:2]

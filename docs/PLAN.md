@@ -48,13 +48,16 @@ Phase 2/3 status (2026-11-07, end of session):
 |---|---|
 | 7. Bus-swap register | Done: 0x54 bit 2 (bit-reversed low byte); full 1674-bit sweep, no plain shift |
 | 8. 10-bit from pairs | Done: `--tenbit`; one coarse block then fine frames unwrapped against the stack; no comb |
-| 9. Bracketing | Done on the bare backlight (`--bracket`); film dynamic range waits for film |
+| 9. Bracketing | Done (`--bracket`); on film in Phase 4 |
 | 10. Backlight | Done: three white LEDs at different heights, not RGB; nothing to gain |
-| 11. Film validation | Waiting: film was removed for the masters; run when it is back |
 | 12. Deep stacks | Done: streaming, rejection, noise vs N; 200 frames in ~2 min |
 | 13. Masters | Done: 200-frame darks (AEC 6/600/1800 at 0x41, 1800 at 0x43) and flats, 8- and 10-bit |
 | 14. No spatial filtering | Done (none in the pipeline) |
 | 15. One command | Done: `f50raw.py OUT --tenbit --frames 200 --calib`; 121 s end to end |
+| 16. Exposure ladder | Done: AEC 2400 / 10764 / 44220 (x1 / x4.09 / x16.7 measured), 400/200/100 frames, darks per step, flat, defect map |
+| 17. Merge and convert | Done: `frames/p4_neg_hdr2.dng` (Orientation 8), positive `p4_pos_dcb_sneakers.tif`; negadoctor compared |
+| 18. Prove it | Done: NOTES "Phase 4": 15.4 stops captured, film range 3.5 stops, noise 5.9 -> 0.29 LSB10, 100 % crop |
+| 11. Film validation | Done as part of Phase 4 (10-bit stacks and brackets on the negative) |
 
 
 Earlier next step: load film and run step 6; confirm B/R with a slide; see "Open questions" in NOTES.md.

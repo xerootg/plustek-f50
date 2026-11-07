@@ -48,13 +48,17 @@ sudo python3 -I tools/f50master.py dark --tenbit --exposure 1800 --frames 200
 # one calibrated scan: 200-frame true 10-bit stack, dark + flat corrected, 16-bit DNG
 sudo python3 -I tools/f50raw.py frames/neg1 --tenbit --frames 200 --exposure 1800 --calib
 
-# exposure bracket merged linearly (each step stacked)
-sudo python3 -I tools/f50raw.py frames/neg1_hdr --tenbit --frames 64 --calib --bracket 6,1800,1800:3
+# exposure bracket merged linearly (each step stacked; AEC:CLKDIV:GAIN:FRAMES, darks per step)
+sudo python3 -I tools/f50raw.py frames/neg1_hdr --tenbit --calib --save-steps --orientation 8 \
+    --bracket "2400::0:400,10764::0:200,44220::0:100"
+
+# a positive from the linear DNG (needs rawpy and tifffile, e.g. in a venv)
+.venv/bin/python tools/f50positive.py frames/neg1_hdr.dng frames/neg1_pos --demosaic dcb
 ```
 
-Each run writes `NAME.dng` (16-bit linear BGGR CFA, Orientation tag set because the
-F50's image is mirrored), `NAME.pgm` (the same samples) and `NAME.json` (frames used and
-rejected, noise versus N, noise floor and dynamic range per channel, timing). Frames are
+Each run of f50raw writes `NAME.dng` (16-bit linear BGGR CFA, TIFF Orientation from
+`--orientation`, which depends on how the film sits in the holder), `NAME.pgm` (the same
+samples) and `NAME.json` (frames used and rejected, noise versus N, noise floor and dynamic range per channel, timing). Frames are
 2592 x 1944; see `docs/NOTES.md`.
 
 ## Status
