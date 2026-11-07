@@ -128,3 +128,23 @@ byte. Opcodes 0x13/0x14 are generic I2C reads/writes to any address, and
 them. At boot the firmware sets IFCONFIG=0xC3 (internal 48 MHz clock, slave
 FIFO mode), so the pixel stream is pushed into EP2's FIFO by the engine
 hardware; the host only configures the engine over I2C and reads bulk 0x82.
+
+### The engine is an image sensor: OmniVision OV5620
+
+Reading the I2C 0x30 device's registers (`docs/engine-regs-poweron.txt`):
+`0x0a/0x0b = 0x56 0x21` (PIDH/PIDL) and `0x1c/0x1d = 0x7f 0xa2` (MIDH/MIDL,
+OmniVision's manufacturer ID). That is the OV5620, a 1/2.5" 5-megapixel
+(2592 x 1944) Bayer CMOS sensor, SCCB write address 0x60 = 7-bit 0x30.
+Everything fits: the manual's "Image Capture CMOS", the "5 MP" marketing,
+1800 dpi (2592 px across a 36.6 mm frame), no motor, 100 mA bus power, the
+hand-indexed holder, and `Reg.ini`'s ExposureTime/Gain/RGBGamma, which are
+sensor exposure, sensor gain and per-channel white balance.
+
+So the F50 is a fixed camera with a backlight. The GT-6816 only pipes the
+sensor's parallel pixel bus into the USB FIFO (slave FIFO mode) and relays
+I2C. "Raw sensor data" therefore means: configure the OV5620 for its raw
+Bayer output, manual exposure, gain 1x, no AWB/gamma, grab full frames over
+bulk 0x82, demosaic on the PC. The Windows `Positive.map`/`Negative.map`
+12-bit LUTs are what the DLL applied afterwards and can be skipped.
+
+Registers 0x04 to 0x09 change between reads (live AEC/AGC state).
