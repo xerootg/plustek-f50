@@ -118,3 +118,33 @@ Next: load film and run step 6; confirm B/R with a slide; see "Open questions" i
 11. **Validate on film.** The owner will leave a developed film strip in the
     holder. Capture it with every mode (8-bit, 10-bit pair, bracketed) and
     keep the outputs in `frames/` with a short comparison in `docs/NOTES.md`.
+
+## Phase 3 (added 2026-11-07): deep stacking
+
+12. **Hundreds of frames per scan.** The scene is static, so temporal
+    averaging is the denoiser: it is unbiased and removes nothing spatial.
+    Make `tools/f50raw.py` stream-accumulate (uint32/float64 sum and sum of
+    squares, never all frames in memory), accept `--frames 200` and higher,
+    reject frames with transfer faults (wrong size, misaligned rows) or whose
+    mean is an outlier against the running stack (backlight flicker), and
+    report per-channel noise versus N so convergence is visible. Keep the
+    8-bit dither assumption honest: temporal noise must stay above about
+    0.5 LSB at the chosen exposure, otherwise the mean is quantised; if it is
+    too low, raise exposure or use the 10-bit pair path.
+13. **Fixed-pattern calibration.** Averaging cannot remove what every frame
+    shares: dark-signal non-uniformity and pixel response non-uniformity.
+    Build a 200-frame dark master (backlight off, same exposure) and a
+    200-frame flat master (bare backlight, holder empty) per exposure setting
+    used; apply dark subtraction and flat division in linear space before
+    writing the DNG. The flat needs the film out of the holder, so capture it
+    when the owner next removes the strip; until then use the 16-frame flats
+    already in `frames/` and say so in the output JSON.
+14. **No spatial filtering.** Do not add blur, median or wavelet denoise to the
+    pipeline; the owner crops hard and needs every pixel. Demosaic stays in
+    the viewer (DNG output), or if a preview is needed use a quality demosaic
+    (DCB/AMaZE via rawpy) rather than binning.
+15. **Deliverable.** One command that captures N frames (plus brackets if
+    enabled), applies calibration, writes a 16-bit linear DNG with the
+    orientation tag set, and prints the measured noise, dynamic range and
+    time taken. Target: a 200-frame stack of the loaded negative under five
+    minutes.
