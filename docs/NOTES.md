@@ -670,3 +670,47 @@ a wide margin; the brackets serve to lift the dense highlights far above the noi
   merge avoids that range, the cause (dark current plus a full-well effect?) is unexplored.
 - LibRaw-based viewers may show mirrored-orientation DNGs wrongly (darktable is fine).
 - Throughput (~14 MB/s) and an FX2-side look at it remain as before.
+
+## 2026-11-07 (day): two more negatives, a stacker fault and what a re-captured step taught
+
+Two frames of the same strip were scanned with the Phase 4 recipe (`--tenbit --calib
+--bracket "2400::0:400,10764::0:200,44220::0:100"`). Both read upright and unmirrored in
+sensor coordinates, so `--orientation 1` (the previous strip needed 8: the mirror depends on
+which way the film faces).
+
+- **Frame 1** (`frames/take2_hdr.dng`, 15.4 stops): the AEC 10764 step kept only 10 of 306
+  frames. From the 11th fine frame on, every frame failed the residual test with the same
+  value (14.2 LSB10 against a running median of 2.6) while the centre mean barely moved
+  (936.0 vs 936.5). A frame in coarse format (bits 9..2) read as a fine frame gives exactly
+  this: unclipped pixels land anywhere within a 256 turn (mean error ~64 on the 23 % of
+  pixels not clipped = ~14 overall) and clipped pixels still unwrap to 1023. The sensor's
+  bus-swap bit (0x54 b2) therefore most likely reverted mid-stream, or the FIFO delivered
+  frames out of format; the first run of the previous night never showed it. `stack10` now
+  reads the register back after four consecutive rejections, logs it, re-asserts the swap,
+  saves the first rejected raw frames as `OUT_rejectN.npy`, and gives up after three
+  resyncs (commit 5d4dd12). It has not triggered since (two clean steps and a full clean
+  bracket after the fix), so the register read-back that would settle the cause is still
+  pending the next occurrence.
+- **Do not recapture one bracket step later and merge it with the others.** The AEC 10764
+  step of frame 1 was re-shot 20 minutes after the run (`frames/take2_s1.*`, 200 frames, 0
+  rejected) and merged with the saved steps via `--from-steps`. The merge was wrong: the
+  measured exposure ratio to the 2400 step was uniform (4.09 at every level and in every
+  region) for the original 10-frame step but varied from 0.15 to 8 at low levels for the
+  re-shot one, and the ceiling search collapsed to 250. The images are registered to better
+  than 0.1 pixel (phase correlation per 400 px patch), so the film did not move. What
+  changed is the backlight: the re-shot step is 1.8 % dimmer in the top third of the frame
+  and 0.5 % brighter in the bottom third, and the defocused shadow of the holder edge moved
+  down by 12 rows at the top and 8 at the bottom (half-height row 22.6 in steps 1-2 of the
+  original run, 26.1 in step 3, 34.4 afterwards). Both edges moving the same way is what a
+  shift of the illumination centroid does to an out-of-focus aperture, i.e. the balance of
+  the three LED strings changed. An 8-minute test afterwards (one AEC 2400 frame every 30 s,
+  `frames/drift/`) showed no drift at all: edge rows constant to 0.01, brightness to 0.1 %.
+  So the change was a discrete event between 12:45 and 13:05, not a warm-up curve; cause
+  unknown. Practical rule: all steps of a bracket in one continuous run, which the merge
+  tolerates because it measures the ratios from the data.
+- **Frame 2** (`frames/take5_hdr.dng`, 15.4 stops): clean run, 400/200/100 frames, 0
+  rejected, 0 resyncs, 1663 s. Stack standard error (Gb, LSB10) 0.30 / 0.14 / 0.18 per step.
+- The per-string backlight test at AEC 6 is useless with film loaded (3 LSB10 of signal);
+  it needs the holder empty or a longer exposure.
+- Scripting note: a `while pgrep -f scratchpad/drift.py` wait matched the shell that was
+  running the wait itself and spun for five hours. Use `pgrep -f 'drift[.]py'` or a pid file.
