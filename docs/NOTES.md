@@ -714,3 +714,45 @@ which way the film faces).
   it needs the holder empty or a longer exposure.
 - Scripting note: a `while pgrep -f scratchpad/drift.py` wait matched the shell that was
   running the wait itself and spun for five hours. Use `pgrep -f 'drift[.]py'` or a pid file.
+
+## 2026-11-07 (evening): the same frame twice, and what the three rejected frames were
+
+Frame 2 was re-shot 100 minutes after `take5` with nothing touched (`frames/take6_hdr.*`,
+same recipe, 1797 s). The two runs answer "does the backlight drift again?" with yes.
+
+- **Film did not move** (phase correlation between the step means: 0 px). **The illumination
+  did**: take6 is about 0.4 % brighter in the top quarter and 0.1 % dimmer at the bottom than
+  take5 (row-band medians of the AEC 2400 step ratio), and the defocused holder shadow moved
+  up by about 11 rows at both edges (half-height row 22 -> 10 at the top, 1773 -> 1762 at the
+  bottom). The earlier event (12:36 -> 13:05) was the mirror image: top 1.5-2 % dimmer, both
+  edges down 12 rows. So the illumination centroid wanders on a timescale of tens of minutes
+  in both directions, by roughly 10 rows of shadow movement and 1-2 % of top-to-bottom tilt.
+  Within a run it is much smaller: the bottom edge moved 0.1 (take2), 0.4 (take5) and 1.2
+  (take6) rows between the 2400 and the 10764 step, seven minutes apart.
+- The exposure ratios the merge measures were the same in both runs (0.0599/0.2445 vs
+  0.0597/0.2441), so the bracket merge is not hurt by this. What goes stale is the **flat
+  master** (01:17, empty holder): its tilt and its shadow-edge rows no longer match the
+  scan, so a calibrated DNG carries a ~1 % top-to-bottom gradient error and wrong values in
+  the first ~40 and last ~180 rows. A flat is only valid close in time to the scan: take one
+  with the holder empty right before loading the strip, accept the <= 1 % drift inside a
+  28-minute run, and crop the shadow margins. The lamp was on continuously before both
+  runs (since the string test at 18:42; since 12:29 for the 13:05 event), so warm-up from
+  cold does not explain it by itself. Still untested: a cold start (lamp off 30 min, then one
+  AEC 2400 frame every 30 s for 20 min) to see whether the first minutes move more.
+- **The three rejected frames** (take6 step 0, frames 96-98, logged as "mean 427.47 vs median
+  429.65") were neither a backlight dip nor coarse-format frames: they fit neither reading
+  (median |x - ref| 62 LSB10 as fine, 277 as coarse). Cross-correlating the chunk's raw byte
+  stream against the fine byte stream expected from the stack finds the frame boundary
+  3,801,204 bytes into the 3-frame buffer (1466 rows + 1332 px): the FIFO started partway
+  through a frame, so the buffer holds whole frames that are not aligned to its start.
+  Realigned, two of the three are ordinary frames (median |v - ref| 3.2 LSB10, mean 341.97
+  vs 342.20). The next chunk was fine. This is probably also what hit frame 1's AEC 10764
+  step this morning (a constant offset gives the constant residual, and with 78 % of pixels
+  clipped the mean would not move either), but those frames were not saved, so the
+  bus-swap explanation written above is now the less likely one. `stack10` cross-correlates
+  on the first rejected frame of a chunk (1.6 s), logs the offset, realigns and stacks the
+  recoverable frames (k-1 of k); the per-step record gains `stream_offsets`. The swap
+  read-back stays as the second line.
+- The ceiling search of the AEC 44220 step is not stable between runs (red 675 in take5, 1023
+  = none found in take6): a robustness item for `merge_bracket`.
+- The positive from take6 (`frames/take6_pos.jpg`) is indistinguishable from take5 by eye.

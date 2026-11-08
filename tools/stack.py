@@ -144,6 +144,34 @@ def stack8(s, n, chunk=3, log=print, max_seen=None):
     return st
 
 
+def stream_offset(buf, ref, rev8, F=None):
+    """Byte offset of the first frame boundary in a bulk-read buffer of fine frames.
+
+    The firmware does not always start the FIFO at VSYNC: a chunk then holds complete
+    frames that begin partway through the buffer (2026-11-07 evening: three frames in a row
+    rejected, content offset by 1,237,644 bytes, the next chunk fine again). The first frame's
+    worth of bytes is cross-correlated (FFT) with the fine byte stream expected from the
+    reference; returns (offset, quality) where quality is the fraction of a pixel sample
+    within 6 LSB of the reference after unwrapping at that offset (aligned frames measure
+    0.7-0.9, a wrong offset below 0.1)."""
+    F = F or H * W
+    e = rev8[np.rint(ref).astype(np.int64) & 0xFF].astype(np.float64).ravel()
+    f = np.frombuffer(buf, np.uint8, count=F).astype(np.float64)
+    P = 1 << (2 * F - 1).bit_length()                      # >= 2F: no circular ambiguity
+    cc = np.fft.irfft(np.fft.rfft(f - f.mean(), P) * np.conj(np.fft.rfft(e - e.mean(), P)), P)
+    i = int(np.argmax(cc)); del cc, f
+    s = i if i < P // 2 else i - P                         # buffer[n + s] ~ expected[n]
+    o = s % F
+    if o + F > len(buf):
+        return o, 0.0
+    fr = np.frombuffer(buf, np.uint8, count=F, offset=o).reshape(H, W)[::7, ::7]
+    r = ref[::7, ::7]
+    lo = rev8[fr].astype(np.float64)
+    v = np.clip(lo + 256 * np.rint((r - lo) / 256.0), 0, 1023)
+    m = r < 1000
+    return o, float((np.abs(v - r)[m] < 6).mean()) if m.any() else 0.0
+
+
 def stack10(s, n, chunk=3, coarse_frames=4, settle_frames=2, log=print, max_seen=None,
             dump=None, resync_after=4, max_resyncs=3):
     """Capture until n true 10-bit frames are accepted. One block of coarse frames (bits
@@ -151,10 +179,13 @@ def stack10(s, n, chunk=3, coarse_frames=4, settle_frames=2, log=print, max_seen
     0..7, bit-reversed) unwrapped against the running mean of the stack, so a deep 10-bit
     stack costs one frame per frame. Pixels at 255 in any coarse frame are clipped (1023).
 
-    Recovery: after resync_after consecutive rejections the swap register is read back and
-    logged, the swap bit is re-asserted and capture continues (2026-11-07: on film at AEC
-    10764 every fine frame after the 10th was rejected with the same residual, consistent
-    with the bus swap having reverted or a stale byte in the FIFO). The first rejected raw
+    Recovery: a rejected frame is first checked for a stream offset (stream_offset): the
+    FIFO sometimes starts partway through a frame, so the chunk holds whole frames that do
+    not begin at the buffer start. When the boundary is found the chunk is realigned and its
+    remaining whole frames are stacked (k-1 of k). After resync_after consecutive rejections
+    the swap register is read back and logged, the swap bit is re-asserted and capture
+    continues (2026-11-07: on film at AEC 10764 every fine frame after the 10th was rejected
+    with the same residual; the offset check did not exist yet). The first rejected raw
     frames are saved as DUMP_rejectI.npy when dump is given. After max_resyncs the step is
     abandoned with an error instead of burning the rest of max_seen."""
     import f50
@@ -172,7 +203,7 @@ def stack10(s, n, chunk=3, coarse_frames=4, settle_frames=2, log=print, max_seen
     max_seen = max_seen or int(n * 1.5) + 6
     t0 = time.time()
     s.bus_swap(True)
-    streak, resyncs, dumped = 0, 0, 0
+    streak, resyncs, dumped, offsets = 0, 0, 0, []
     try:
         while st.n < n and st.seen < max_seen:
             k = min(chunk, n - st.n)
@@ -182,7 +213,11 @@ def stack10(s, n, chunk=3, coarse_frames=4, settle_frames=2, log=print, max_seen
                 st.seen += k
                 streak += k
             else:
-                for fr in np.frombuffer(data, np.uint8).reshape(k, H, W):
+                frames = np.frombuffer(data, np.uint8).reshape(k, H, W)
+                j, realigned = 0, False
+                while j < len(frames):
+                    fr = frames[j]
+                    j += 1
                     lo = rev8[fr].astype(np.float64)
                     v = np.clip(lo + 256 * np.rint((ref - lo) / 256.0), 0, 1023)
                     v[clip] = 1023
@@ -195,6 +230,19 @@ def stack10(s, n, chunk=3, coarse_frames=4, settle_frames=2, log=print, max_seen
                         np.save(path, fr)
                         dumped += 1
                         log(f"  saved rejected raw frame to {path}")
+                    if not realigned:
+                        realigned = True
+                        o, q = stream_offset(data, ref, rev8)
+                        if o and q >= 0.5:
+                            nf = (len(data) - o) // f50.FRAME_BYTES
+                            log(f"  frame boundary found {o} bytes into the chunk ({o // W} rows + {o % W} px, "
+                                f"quality {q:.2f}); realigning, {nf} of {k} frames recoverable")
+                            offsets.append(o)
+                            frames = np.frombuffer(data, np.uint8, count=nf * f50.FRAME_BYTES,
+                                                   offset=o).reshape(nf, H, W)
+                            j = 0
+                        else:
+                            log(f"  no stream offset found (best {o} bytes, quality {q:.2f})")
             if streak >= resync_after:
                 reg = s.read_regs([f50.SWAP_REG])[f50.SWAP_REG]
                 resyncs += 1
@@ -228,6 +276,7 @@ def stack10(s, n, chunk=3, coarse_frames=4, settle_frames=2, log=print, max_seen
         log(f"  10-bit check: {int(bad.sum())} pixels were a whole turn off the coarse reference; corrected")
     st.unwrap_fixed = int(bad.sum())
     st.resyncs = resyncs
+    st.offsets = offsets
     return st
 
 
