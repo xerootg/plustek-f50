@@ -756,3 +756,30 @@ same recipe, 1797 s). The two runs answer "does the backlight drift again?" with
 - The ceiling search of the AEC 44220 step is not stable between runs (red 675 in take5, 1023
   = none found in take6): a robustness item for `merge_bracket`.
 - The positive from take6 (`frames/take6_pos.jpg`) is indistinguishable from take5 by eye.
+
+## 2026-11-08 (night): it was the holder, not the backlight
+
+A cold-start test (lamp off 30 min, then one AEC 2400 frame every 30 s for 20 min, film
+loaded, `frames/coldstart/`) showed no warm-up at all: after the first frame, which
+straddled the switch-on, brightness held to 0.05 % and the shadow edge to 0.2 rows.
+
+Then 10-bit flats per LED string were taken with the holder empty (`frames/masters_strings/`,
+200 frames each). All three strings put the holder shadow edge on the same row (14.3 top,
+1763 bottom, centre columns), so string balance cannot move the edge. The new all-on flat
+matches the 01:17 flat (`flat10_e6`) to 0.2 % everywhere except the shadow margins. The sum
+of the three strings matches the all-on flat's shape to 0.1 %. The flat is not stale.
+
+What moved is the holder. The shadow edge is slanted (left and right columns differ by ~16
+rows) and its rows differ between every insertion: 01:17 flat, today's flat, take2, take5 and
+take6 all disagree. Windowed patch correlation of take6 against take5 shows the film itself
+shifted by 4-7 green px (8-14 sensor rows) and 5-7 green px sideways. The earlier "film did not move,
+0 px" for take5/take6 was wrong: that correlation ran on a crop dominated by clipped pixels
+and its peak (0.125) was too weak to mean anything. The 1-2 % "tilt" measured between
+runs was mostly misregistration, not illumination. take2 against take2_s1 is ambiguous
+(patches disagree, 0 or 8 px), so the 12:45 event may have been the same thing.
+
+Practical result: the flat is fine and does not need refreshing per scan. Crop the holder
+shadow margins (the edge position changes with every insertion and with every nudge of
+the holder). Never combine runs unless they are registered; a bracket from one continuous
+run with nobody touching the scanner stays registered (take5 step 0 vs step 1: 0 px at all
+patches). The live string-mix calibration is not needed.
