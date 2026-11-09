@@ -159,7 +159,8 @@ def main():
     ap.add_argument("--crops", action="store_true", help="also write 100%% crops (JPEG) of 3 regions")
     args = ap.parse_args()
 
-    if not args.no_dng and os.path.abspath(args.out + ".dng") == os.path.abspath(args.dng):
+    out_dng = args.out + ".dng"
+    if not args.no_dng and os.path.exists(out_dng) and os.path.samefile(out_dng, args.dng):
         ap.error(f"output {args.out}.dng would overwrite the input negative; choose another OUT prefix or pass --no-dng")
     img = demosaic(args.dng, args.demosaic)
     base_box, frame_box, side = find_regions(img)
