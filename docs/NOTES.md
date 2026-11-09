@@ -805,3 +805,12 @@ sRGB primaries, D65, AsShotNeutral 1/1/1, values after the highlight shoulder), 
 open it with the colours as stored and apply their own tone curve. LibRaw decodes it and
 exiftool reads it as Linear Raw. `f50raw.py --calib` now runs the conversion by default
 (`--no-positive` to skip), using the repo's `.venv` and the invoking user (not root).
+
+Retuned the next day after the user's review. The sky of take7 is not blown: its density is
+0.55 above base against 1.17 at the frame's densest point, and the scanner signal there sits
+far below clipping. Blue-sky patches read +0.045 in blue-minus-red density with a per-pixel
+spread of 0.0075, and clouds read 0. The 3.5 green gain amplified the sky's small green excess
+and turned it cyan. The fence came out magenta because the green channel's contrast was too
+high below the median (dark wood: green 0.011 under the red-blue midpoint). New defaults are
+`--separation 2.0,2.5 --shadow-gain 1,0.9,1`. The sky reads pale blue, the fence brown, the
+flowers yellow, and the path and clouds stay neutral.

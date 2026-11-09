@@ -17,12 +17,16 @@ Steps (no spatial filtering besides the demosaic itself):
     (0.02 and 99.98 percentiles of D inside the frame): this equalises the three dye
     layers' contrast and neutralises the orange mask, as darktable's negadoctor does with
     Dmin, white and black.
- 5. Dye separation (--separation A_RB,A_G): the density chroma is expanded around the
+ 5. Shadow balance (--shadow-gain R,G,B): per-channel density gain below the image median.
+    Default 1,0.9,1: on take7 dark wood came out magenta (green contrast too high in the
+    shadows); 0.9 made it brown, 0.82 turned shadows green.
+    Dye separation (--separation A_RB,A_G): the density chroma is expanded around the
     neutral axis, A_RB along the warm-cool (red-blue) axis and A_G along the green-magenta
     axis. Under the F50's white LED backlight each sensor channel sees parts of two dye
     layers, and the green-magenta axis suffers most (measured on take7: chroma std 0.022
-    warm-cool vs 0.0085 green-magenta, foliage came out teal-grey). 1.4,3.5 was tuned by
-    eye on take7 (2026-11-08); a colour target would replace it with a measured matrix.
+    warm-cool vs 0.0085 green-magenta, foliage came out teal-grey). 2.0,2.5 was tuned by
+    eye on take7 (2026-11-09; 1.4,3.5 the day before made the sky cyan); a colour target
+    would replace it with a measured matrix.
  6. Print: scene-linear positive L = mid * 10^(D'/gamma), black point at the shadow floor,
     Reinhard shoulder (white at the --white percentile). Written as a positive linear DNG
     (OUT.dng, LinearRaw, linear sRGB primaries, values 0..1 after the shoulder), 16-bit
@@ -120,6 +124,16 @@ def separate(dp, a_rb, a_g):
     return dp @ m.T, m
 
 
+def shadow_balance(dp, centre, gains):
+    """Scale each channel's density below `centre` by its gain (contrast of the shadows only)."""
+    out = dp.copy()
+    for c, g in enumerate(gains):
+        if g != 1.0:
+            x = dp[..., c] - centre
+            out[..., c] = np.where(x < 0, centre + x * g, dp[..., c])
+    return out
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("dng")
@@ -137,7 +151,9 @@ def main():
                     "(before --rotate): per-channel density scaled so they come out grey")
     ap.add_argument("--neutral-value", type=float, default=0.18, help="linear value of the neutral patch")
     ap.add_argument("--curve", type=float, default=0.0, help="gentle S-curve strength (0 = none, ~0.2 mild)")
-    ap.add_argument("--separation", default="1.4,3.5",
+    ap.add_argument("--shadow-gain", default="1,0.9,1",
+                    help="per-channel density gain below the median R,G,B (1,1,1 = off)")
+    ap.add_argument("--separation", default="2.0,2.5",
                     help="dye separation A_RB,A_G: density chroma gain on the warm-cool and green-magenta axes (1,1 = off)")
     ap.add_argument("--no-dng", action="store_true", help="do not write the positive DNG")
     ap.add_argument("--crops", action="store_true", help="also write 100%% crops (JPEG) of 3 regions")
@@ -157,6 +173,7 @@ def main():
     valid = (d < 2.7).all(-1) & (d > -0.5).all(-1)
     gamma = args.film_gamma
     a_sep = tuple(float(v) for v in args.separation.split(","))
+    g_sh = tuple(float(v) for v in args.shadow_gain.split(","))
     neutral_info = None
     if args.neutral:
         # neutral-reference model (negadoctor-like): film base is density 0 in every channel
@@ -166,7 +183,7 @@ def main():
         pts = np.concatenate([d[y0:y1, x0:x1].reshape(-1, 3) for x0, y0, x1, y1 in boxes])
         dn = np.median(pts, 0)
         slope = dn.mean() / dn
-        dp, sep_m = separate(d * slope, *a_sep)
+        dp, sep_m = separate(shadow_balance(d * slope, dn.mean(), g_sh), *a_sep)
         med = hi = dn
         lin = args.neutral_value * np.power(10.0, (dp - dn.mean()) / gamma)
         lb = args.neutral_value * 10 ** ((np.percentile(dp.mean(-1)[valid], args.lo) - dn.mean()) / gamma)
@@ -181,7 +198,7 @@ def main():
         med = np.array([np.median(d[..., c][valid]) for c in range(3)])
         hi = np.array([np.percentile(d[..., c][valid], args.hi) for c in range(3)])
         slope = (hi - med).mean() / (hi - med)
-        dp, sep_m = separate((d - med) * slope, *a_sep)
+        dp, sep_m = separate(shadow_balance((d - med) * slope, 0.0, g_sh), *a_sep)
         # print: scene-linear L = mid_grey * 10^(D'/gamma); black point at the film's shadow
         # floor; Reinhard shoulder with white at the --white percentile
         lin = args.mid * np.power(10.0, dp / gamma)
@@ -214,7 +231,7 @@ def main():
             "channel_slope": [round(float(v), 4) for v in slope], "film_gamma": gamma, "mid_grey": args.mid,
             "black_lin": round(float(lb), 5), "white_lin": round(float(wpt), 3),
             "neutral": neutral_info, "curve": args.curve,
-            "separation": list(a_sep), "separation_matrix": np.round(sep_m, 4).tolist(),
+            "separation": list(a_sep), "shadow_gain": list(g_sh), "separation_matrix": np.round(sep_m, 4).tolist(),
             "positive_dng": None if args.no_dng else args.out + ".dng",
             "rotate": args.rotate, "size": list(out16.shape)}
     if args.crops:
