@@ -138,8 +138,9 @@ def write_linear_dng(path, rgb16, white=65535, make="Plustek", model="SmartPhoto
         (50706, BYTE, [1, 4, 0, 0]),
         (50707, BYTE, [1, 1, 0, 0]),
         (50708, ASCII, f"{make} {model}"),
-        (50714, RATIONAL, [_rat(0)]),
-        (50717, LONG, [int(white)]),
+        (50713, SHORT, [1, 1]),         # BlackLevelRepeatDim
+        (50714, RATIONAL, [_rat(0)] * 3),   # one per sample (DNG spec; rawler asserts on it)
+        (50717, LONG, [int(white)] * 3),    # one per sample
         (50721, SRATIONAL, [_rat(x) for x in XYZ_TO_SRGB]),
         (50728, RATIONAL, [_rat(1.0)] * 3),
         (50730, SRATIONAL, [_rat(baseline_exposure)]),
