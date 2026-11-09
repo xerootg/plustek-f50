@@ -215,7 +215,7 @@ def stack10(s, n, chunk=3, coarse_frames=4, settle_frames=2, log=print, max_seen
             else:
                 frames = np.frombuffer(data, np.uint8).reshape(k, H, W)
                 j, realigned = 0, False
-                while j < len(frames):
+                while j < len(frames) and st.n < n:
                     fr = frames[j]
                     j += 1
                     lo = rev8[fr].astype(np.float64)

@@ -165,7 +165,8 @@ def capture_stack(s, args, exposure, clkdiv, gain, dark=False, frames=None):
     s.raw_setup(exposure=exposure, gain_reg=gain, clkdiv=clkdiv)
     try:
         if args.tenbit:
-            st = stack.stack10(s, frames, dump=args.out)
+            # one dump prefix per step: Stack.seen restarts at 0 for every step
+            st = stack.stack10(s, frames, dump=f"{args.out}_e{exposure}_c{clkdiv}_g{gain}")
             m = st.mean()
             clip = st.clip | (st.max >= 1020) | (m > SAFE10)
             return m, clip, st
@@ -247,6 +248,8 @@ class SavedStack:
     def __init__(self, rec, mean):
         self.n, self.seen, self.rejected = rec["frames_used"], rec["frames_seen"], rec["rejected"]
         self.seconds = rec["capture_seconds"]
+        # recovery history of the original capture (absent in records older than 5d4dd12)
+        self.resyncs, self.offsets = rec.get("resyncs", 0), rec.get("stream_offsets", [])
         self._rec, self._mean = rec, mean
 
     def summary(self):
