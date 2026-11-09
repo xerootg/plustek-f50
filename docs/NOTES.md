@@ -783,3 +783,25 @@ shadow margins (the edge position changes with every insertion and with every nu
 the holder). Never combine runs unless they are registered; a bracket from one continuous
 run with nobody touching the scanner stays registered (take5 step 0 vs step 1: 0 px at all
 patches). The live string-mix calibration is not needed.
+
+## 2026-11-08 (day): colour separation and positive DNGs
+
+The first positive of a new strip (`frames/take7_hdr.dng`, a path between fences) came out
+nearly grey. The density chroma of the frame shows why: almost all of it lies on the
+warm-cool axis (std 0.022 in density), and the green-magenta axis is nearly flat (std
+0.0085). Under the white LED backlight each sensor channel sees parts of two dye layers, and
+green suffers most, so foliage came out teal-grey. A plain saturation boost made it worse:
+the trees went blue, because their measured hue was already off.
+
+`f50positive.py` now expands the density chroma around the neutral axis with separate gains
+on the two axes (`--separation A_RB,A_G`, default 1.4,3.5, tuned by eye on take7). Neutral
+patches are unchanged (concrete path and clouds stay at 1.00 / 1 / 0.98), the grass goes
+from G/R 1.1 to 1.5, and yellow flowers read yellow. Skies lean slightly cyan, as colour
+negative film often does. A colour target on the same stock would replace these gains with
+a measured matrix.
+
+It also writes the positive as a LinearRaw DNG (`OUT_pos.dng`: 3 samples per pixel, linear
+sRGB primaries, D65, AsShotNeutral 1/1/1, values after the highlight shoulder), so raw editors
+open it with the colours as stored and apply their own tone curve. LibRaw decodes it and
+exiftool reads it as Linear Raw. `f50raw.py --calib` now runs the conversion by default
+(`--no-positive` to skip), using the repo's `.venv` and the invoking user (not root).

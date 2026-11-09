@@ -269,6 +269,9 @@ def main():
     ap.add_argument("--dark", action="store_true", help="backlight off (dark capture)")
     ap.add_argument("--from-steps", help="reprocess: load the stacks saved by --save-steps under this OUT "
                     "prefix (with its .json) instead of capturing")
+    ap.add_argument("--positive", action=argparse.BooleanOptionalAction, default=None,
+                    help="also write the inverted positive (OUT_pos.dng/.tif/.jpg) with tools/f50positive.py "
+                         "in the repo's .venv; default: on for calibrated (--calib) scans")
     ap.add_argument("--orientation", type=int, default=f50.ORIENTATION,
                     help="TIFF Orientation for the DNG: 1 as stored, 2 mirrored, 6/8 rotated cw/ccw, "
                          "5/7 transposed (which applies depends on how the film sits in the holder)")
@@ -423,6 +426,29 @@ def main():
         print(f"step {k}: noise vs N (stack standard error, Gb channel, {'10-bit' if args.tenbit else '8-bit'}): "
               + ", ".join(f"{n}:{v['Gb']['stack_se']:.3f}" for n, v in rec["noise_vs_n"].items()))
     print(f"total {info['seconds_total']} s")
+    if args.positive or (args.positive is None and args.calib):
+        make_positive(args.out)
+
+
+def make_positive(out):
+    """Run tools/f50positive.py on OUT.dng with the repo's .venv (rawpy lives there, not in the
+    system Python this tool runs under with sudo). Drops back to the invoking user so the
+    outputs are not root-owned."""
+    import subprocess
+    here = os.path.dirname(os.path.abspath(__file__))
+    py = os.path.join(here, "..", ".venv", "bin", "python")
+    if not os.path.exists(py):
+        print(f"positive: skipped, no {py}")
+        return
+    kw = {}
+    if os.geteuid() == 0 and os.environ.get("SUDO_UID"):
+        kw = dict(user=int(os.environ["SUDO_UID"]), group=int(os.environ["SUDO_GID"]))
+        for ext in (".dng", ".json", ".pgm"):
+            if os.path.exists(out + ext):
+                os.chown(out + ext, kw["user"], kw["group"])
+    r = subprocess.run([py, os.path.join(here, "f50positive.py"), out + ".dng", out + "_pos", "--demosaic", "dcb"],
+                       capture_output=True, text=True, **kw)
+    print(f"positive: {out}_pos.dng/.tif/.jpg" if r.returncode == 0 else f"positive: failed\n{r.stderr[-2000:]}")
 
 
 if __name__ == "__main__":

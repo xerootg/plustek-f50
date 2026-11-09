@@ -59,6 +59,11 @@ def write_dng(path, cfa16, pattern="BGGR", black=(0, 0, 0, 0), white=65535,
         (50728, RATIONAL, [_rat(x / max(neutral)) for x in neutral]),
         (50778, SHORT, [21]),           # D65
     ]
+    _write(path, entries, a)
+
+
+def _write(path, entries, a):
+    """Write one IFD (entries: (tag, type, values); tag 273 is patched) followed by the image."""
     entries = [e for e in entries if e[2] != ""]
     entries.sort(key=lambda e: e[0])
     n = len(entries)
@@ -103,3 +108,41 @@ def write_dng(path, cfa16, pattern="BGGR", black=(0, 0, 0, 0), white=65535,
     with open(path, "wb") as f:
         f.write(out)
         f.write(a.tobytes())
+
+
+def write_linear_dng(path, rgb16, white=65535, make="Plustek", model="SmartPhoto F50 positive",
+                     software="plustek-f50 tools/f50positive.py", description="", baseline_exposure=0.0):
+    """rgb16: (H, W, 3) uint16, linear RGB with Rec.709/sRGB primaries and D65 white (a
+    demosaiced, already oriented positive). Written as a LinearRaw DNG: the colour matrix
+    says the "camera" is linear sRGB, so any raw editor shows the colours as stored and
+    applies its own tone curve. baseline_exposure (stops) tells editors how much to brighten."""
+    a = np.ascontiguousarray(rgb16, dtype="<u2")
+    h, w, _ = a.shape
+    entries = [
+        (254, LONG, [0]),
+        (256, LONG, [w]),
+        (257, LONG, [h]),
+        (258, SHORT, [16, 16, 16]),
+        (259, SHORT, [1]),
+        (262, SHORT, [34892]),          # LinearRaw
+        (270, ASCII, description),
+        (271, ASCII, make),
+        (272, ASCII, model),
+        (273, LONG, None),
+        (274, SHORT, [1]),
+        (277, SHORT, [3]),
+        (278, LONG, [h]),
+        (279, LONG, [a.nbytes]),
+        (284, SHORT, [1]),
+        (305, ASCII, software),
+        (50706, BYTE, [1, 4, 0, 0]),
+        (50707, BYTE, [1, 1, 0, 0]),
+        (50708, ASCII, f"{make} {model}"),
+        (50714, RATIONAL, [_rat(0)]),
+        (50717, LONG, [int(white)]),
+        (50721, SRATIONAL, [_rat(x) for x in XYZ_TO_SRGB]),
+        (50728, RATIONAL, [_rat(1.0)] * 3),
+        (50730, SRATIONAL, [_rat(baseline_exposure)]),
+        (50778, SHORT, [21]),           # D65
+    ]
+    _write(path, entries, a)
